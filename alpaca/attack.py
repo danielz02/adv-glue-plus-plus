@@ -1,9 +1,11 @@
+import json
 import random
 import codecs
 import joblib
 import os
 import numpy as np
 import torch
+from datasets import load_dataset
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -12,10 +14,10 @@ from copy import deepcopy
 from CW_attack import CarliniL2
 from util import logger, root_dir, args
 import models
-from pytorch_transformers import BertTokenizer, BertModel, BertForMaskedLM
+from transformers import BertTokenizer, BertModel, BertForMaskedLM
 
 import sys
-from transformers import GPT2LMHeadModel, GPT2TokenizerFast
+from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoTokenizer
 from bert_score import BERTScorer
 
 
@@ -273,9 +275,9 @@ def cw_word_attack(data_val):
 
             all_dict = similar_char_dict
         elif args.function == 'typo':
-            all_dict, unk_words_dict = get_bug_dict(batch['bug_dict'], batch['seq'][0])
+            all_dict, unk_words_dict = get_bug_dict(json.loads(batch['bug_dict']), batch['seq'][0])
         elif args.function == 'knowledge':
-            all_dict = get_knowledge_dict(batch['knowledge_dict'])
+            all_dict = get_knowledge_dict(json.loads(batch['knowledge_dict']))
             unk_words_dict = None
         elif args.function == 'cluster':
             all_dict = get_similar_dict(batch['similar_dict'])
@@ -328,14 +330,6 @@ def cw_word_attack(data_val):
                 tot_len += batch['seq_len'][i].item()
                 if batch_index % 100 == 0:
                     try:
-                        # logger.info(("label:", label[i].item()))
-                        # logger.info(("pred:", prediction[i].item()))
-                        # logger.info(("ori_pred:", ori_prediction[i].item()))
-                        # logger.info(("target:", attack_targets[i].item()))
-                        # logger.info(("orig:", transform(batch['seq'][i])))
-                        # logger.info(("adv:", transform(adv_seq[i], unk_words_dict)))
-                        # logger.info(("seq_len:", batch['seq_len'][i].item()))
-
                         logger.info(("tot:", tot))
                         logger.info(("avg_seq_len: {:.1f}".format(tot_len / tot)))
                         logger.info(("avg_diff: {:.1f}".format(tot_diff / tot)))
@@ -477,7 +471,7 @@ if __name__ == '__main__':
     device = torch.device("cuda")
     model = model.to(device)
     model.eval()
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -486,7 +480,7 @@ if __name__ == '__main__':
         else:
             torch.cuda.manual_seed(args.seed)
     random.seed(args.seed)
-    test_data = YelpDataset(args.test_data)
+    test_data = load_dataset("glue", args.test_data, cache_dir="/scratch/bbkc/danielz/.cache/", split="validation")
 
     cw_word_attack(test_data)
     validate()
