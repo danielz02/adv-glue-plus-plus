@@ -1,9 +1,10 @@
 import torch
 import numpy as np
 from torch import nn
-from pytorch_transformers.modeling_bert import *
+from transformers.models.bert.modeling_bert import BertPooler, BertEncoder, BertConfig, BertPreTrainedModel
 
-def seq_len_to_mask(seq_len, max_len=None):
+
+def seq_len_to_mask(seq_len: object, max_len: object = None) -> object:
     if isinstance(seq_len, np.ndarray):
         assert len(np.shape(seq_len)) == 1, "seq_len can only have one dimension, got {len(np.shape(seq_len))}."
         if max_len is None:
@@ -23,18 +24,19 @@ def seq_len_to_mask(seq_len, max_len=None):
 
     return mask
 
-class BertEmbeddings_attack(nn.Module):
+
+class BertEmbeddingsAttack(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings.
     """
 
     def __init__(self, config):
-        super(BertEmbeddings_attack, self).__init__()
+        super(BertEmbeddingsAttack, self).__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=0)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = torch.nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None, position_ids=None, perturbed=None):
@@ -59,11 +61,11 @@ class BertEmbeddings_attack(nn.Module):
         return embeddings
 
 
-class BertModel_attack(BertPreTrainedModel):
+class BertModelAttack(BertPreTrainedModel):
     def __init__(self, config):
-        super(BertModel_attack, self).__init__(config)
+        super(BertModelAttack, self).__init__(config)
 
-        self.embeddings = BertEmbeddings_attack(config)
+        self.embeddings = BertEmbeddingsAttack(config)
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
 
@@ -139,7 +141,7 @@ class BertC(nn.Module):
     def __init__(self, name='bert-base-uncased', dropout=0.1, num_class=5):
         super(BertC, self).__init__()
         config = BertConfig.from_pretrained(name)
-        self.bert = BertModel_attack(config)
+        self.bert = BertModelAttack(config)
         self.proj = nn.Linear(config.hidden_size, num_class)
         self.loss_f = nn.CrossEntropyLoss()
         self.drop = nn.Dropout(p=dropout)

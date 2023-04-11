@@ -5,9 +5,10 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from util import logger, root_dir, args
-from pytorch_transformers import BertTokenizer, BertModel, BertForMaskedLM
+from transformers import BertTokenizer, BertModel, BertForMaskedLM
 
 from collections import Counter
+
 
 
 class YelpDataset(Dataset):
@@ -75,7 +76,7 @@ def get_similar_dict(indexed_tokens):
     mask_tensor = torch.tensor([[1] * len(indexed_tokens)]).to(device)
     with torch.no_grad():
         encoded_layers, _ = cluster_model(token_tensor, mask_tensor)
-    tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
+    tokenized_words = [tokenizer.id_to_token(x) for x in indexed_tokens]
     for i in range(1, len(indexed_tokens)):
         if tokenized_words[i] in word_list:
             words = get_knn(encoded_layers[0][i].cpu(), 700)
