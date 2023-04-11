@@ -4,19 +4,9 @@ import joblib
 import torch
 import string
 
-from util import args
+from util import args, task_to_keys
 from datasets import load_dataset
 from transformers import AutoTokenizer
-
-
-task_to_keys = {
-    "mnli": ("premise", "hypothesis"),
-    "mnli-mm": ("premise", "hypothesis"),
-    "qnli": ("question", "sentence"),
-    "qqp": ("question1", "question2"),
-    "rte": ("sentence1", "sentence2"),
-    "sst2": ("sentence", None),
-}
 
 
 def bug_delete(word):
@@ -113,7 +103,7 @@ def get_bug_dict(data):
     for key in task_to_keys[args.test_data]:
         if not key:
             continue
-        if "seq" not in data:
+        if "seq" not in data:  # TODO: Deal with multiple keys
             data["seq"] = tokenizer.encode(data[key])
             data["seq_len"] = len(data["seq"])
 
