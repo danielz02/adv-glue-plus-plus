@@ -1,47 +1,22 @@
+import json
 import random
 import joblib
 import torch
 import string
-from torch.utils.data import Dataset
-from tqdm import tqdm
 
-from util import logger, root_dir, args
-from pytorch_transformers import BertTokenizer, BertModel, BertForMaskedLM
-
-
-class YelpDataset(Dataset):
-    def __init__(self, path):
-        cache_path = 'FC_' + path
-        save_path = 'FT_' + cache_path
-        self.data = joblib.load(cache_path)
-        bug_data = []
-        for i, data in enumerate(tqdm(self.data)):
-            data['bug_dict'] = get_bug_dict(data['seq'])
-            bug_data.append(data)
-            if i % 1000 == 0:
-                joblib.dump(bug_data, save_path)
-        joblib.dump(self.data, save_path)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return self.data[index]
+from util import args
+from datasets import load_dataset
+from transformers import AutoTokenizer
 
 
-def transform(seq):
-    if not isinstance(seq, list):
-        seq = seq.squeeze().cpu().numpy().tolist()
-    return tokenizer.convert_tokens_to_string([tokenizer._convert_id_to_token(x) for x in seq])
-
-
-def difference(a, b):
-    tot = 0
-    for x, y in zip(a, b):
-        if x != y:
-            tot += 1
-
-    return tot
+task_to_keys = {
+    "mnli": ("premise", "hypothesis"),
+    "mnli-mm": ("premise", "hypothesis"),
+    "qnli": ("question", "sentence"),
+    "qqp": ("question1", "question2"),
+    "rte": ("sentence1", "sentence2"),
+    "sst2": ("sentence", None),
+}
 
 
 def bug_delete(word):
@@ -133,24 +108,34 @@ def get_bug(word):
     return list(set(bugs))
 
 
-def get_bug_dict(indexed_tokens):
+def get_bug_dict(data):
     bug_dict = {}
-    tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-    for i in range(1, len(indexed_tokens)):
-        if tokenized_words[i] in word_list:
-            words = get_bug(tokenized_words[i])
-        else:
-            words = []
-        if len(words) >= 1:
-            bug_dict[tokenized_words[i]] = words
-        else:
-            bug_dict[tokenized_words[i]] = [tokenized_words[i]]
+    for key in task_to_keys[args.test_data]:
+        if not key:
+            continue
+        if "seq" not in data:
+            data["seq"] = tokenizer.encode(data[key])
+            data["seq_len"] = len(data["seq"])
 
-    return bug_dict
+        indexed_tokens = data["seq"]
+        tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
+        for i in range(1, len(indexed_tokens)):
+            if tokenized_words[i] in word_list:
+                words = get_bug(tokenized_words[i])
+            else:
+                words = []
+            if len(words) >= 1:
+                bug_dict[tokenized_words[i]] = words
+            else:
+                bug_dict[tokenized_words[i]] = [tokenized_words[i]]
+
+    data["bug_dict"] = json.dumps(bug_dict)  # Have to do this to work with Apache Arrow...
+    return data
 
 
 if __name__ == '__main__':
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
     word_list = joblib.load(args.word_list)
     torch.manual_seed(args.seed)
-    test_data = YelpDataset(args.test_data)
+    test_data = load_dataset("glue", args.test_data, cache_dir="/scratch/bbkc/danielz/.cache/", split="validation")
+    test_data.map(get_bug_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.test_data}/FT")
