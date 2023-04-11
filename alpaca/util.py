@@ -11,6 +11,15 @@ import numpy as np
 import torch
 
 
+task_to_keys = {
+    "mnli": ("premise", "hypothesis"),
+    "mnli-mm": ("premise", "hypothesis"),
+    "qnli": ("question", "sentence"),
+    "qqp": ("question1", "question2"),
+    "rte": ("sentence1", "sentence2"),
+    "sst2": ("sentence", None),
+}
+
 class Dictionary(object):
     def __init__(self, path=''):
         self.word2idx = dict()
