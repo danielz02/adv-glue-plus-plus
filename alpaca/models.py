@@ -1,3 +1,4 @@
+import torch
 import numpy as np
 from torch import nn
 from pytorch_transformers.modeling_bert import *
@@ -135,7 +136,7 @@ class BertModel_attack(BertPreTrainedModel):
 
 
 class BertC(nn.Module):
-    def __init__(self, name='bert-base-chinese', dropout=0.1, num_class=14):
+    def __init__(self, name='bert-base-uncased', dropout=0.1, num_class=5):
         super(BertC, self).__init__()
         config = BertConfig.from_pretrained(name)
         self.bert = BertModel_attack(config)
@@ -152,4 +153,5 @@ class BertC(nn.Module):
         ret = {"pred": logits}
         if gold is not None:
             ret["loss"] = self.loss_f(logits, gold)
+        ret['embedding'] = out[0]
         return ret
