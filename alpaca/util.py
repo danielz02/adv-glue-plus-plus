@@ -41,7 +41,7 @@ class Dictionary(object):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--seed', type=int, default=1111,
+    parser.add_argument('--seed', type=int, default=42,
                         help='random seed')
     parser.add_argument('--cache_dir', type=str, default='/scratch/bbkc/danielz/.cache/',
                         help='from_pretrained cache dir')
@@ -57,7 +57,7 @@ def get_args():
                         type=str,
                         default='adv_results/dataset',
                         help="pre-processed dataset")
-    parser.add_argument('--embedding-data', type=str, default='../synonym_data/s.pt',
+    parser.add_argument('--embedding-space', type=str, default='../synonym_data/s.pt',
                         help='location of the embedding data, should be a json file')
     parser.add_argument('--word-list', type=str, default='../synonym_data/word_list.pkl',
                         help='location of the word list data, should be a json file')

@@ -468,6 +468,7 @@ if __name__ == '__main__':
     os.makedirs(args.dataset_dir, exist_ok=True)
     logger = util.init_logger(args.output_dir)
 
+    device = torch.device("cuda:0")
     tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     model = AutoModelForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
     model.to(device)
