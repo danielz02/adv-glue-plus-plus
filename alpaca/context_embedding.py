@@ -20,6 +20,7 @@ import pickle
 
 import joblib
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.models.bert.modeling_bert import BertModel
 import sqlite3 as sql
@@ -63,53 +64,61 @@ def project_umap(points):
 def get_embeddings(word, sentences, model, tokenizer, device):
     """Get the embedding for a word in each sentence."""
     # Tokenized input
-    layers = range(-model.config.num_hidden_layers, 0)
-    points = [[] for layer in layers]
+    points = []
+    batch = []
+    mask = []
+    word_indices = []
+
+    max_len = 512
     print('Getting embeddings for %d sentences ' % len(sentences))
-    for sentence in sentences:
+    for sentence in tqdm(sentences):
         sentence = '</s> ' + sentence + ' </s>'  # Changed to LlaMA bos and eos tokens
         tokenized_text = tokenizer.tokenize(sentence)  # </s> is not added automatically when calling tokenizer.tokenize
 
         # Convert token to vocabulary indices
         indexed_tokens = tokenizer.convert_tokens_to_ids(tokenized_text)
 
-        # Define sentence A and B indices associated to 1st and 2nd sentences (see paper)
-        # should give you something like [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1]
-        # bos token is the same as the eos token in LlaMA
-        sep_idxs = [-1] + [i for i, v in enumerate(tokenized_text) if v == '</s>' and i != 0]
-        segments_ids = []
-        for i in range(len(sep_idxs) - 1):
-            segments_ids += [i] * (sep_idxs[i + 1] - sep_idxs[i])
+        if len(indexed_tokens) > max_len:
+            indexed_tokens = indexed_tokens[:max_len]
 
-        # Convert inputs to PyTorch tensors
-        tokens_tensor = torch.tensor([indexed_tokens], device=device)
-        segments_tensors = torch.tensor([segments_ids], device=device)
-
-        # Predict hidden states features for each layer
-        with torch.no_grad():
-            encoded_layers = model(
-                input_ids=tokens_tensor, attention_mask=segments_tensors, output_hidden_states=True
-            ).hidden_states
-            encoded_layers = [l.cpu() for l in encoded_layers]
-
-        # We have a hidden states for each of the 12 layers in model bert-base-uncased
-        encoded_layers = [l.numpy() for l in encoded_layers]
         try:
-            word_idx = tokenized_text.index(word)
+            word_idx = tokenized_text.index(f"▁{word}")
         # If the word is made up of multiple tokens, just use the first one of the tokens that make it up.
         except ValueError as e:
             word_idx = None
             for i, token in enumerate(tokenized_text):
-                if token == word[:len(token)]:
-                    word_idx = i
-            print(e, word, tokenized_text, tokenized_text[word_idx])
+                # Match start of the word
+                if token.startswith("▁"):
+                    j = min(i + 1, len(tokenized_text))
+                    while not tokenized_text[j].startswith("▁"):
+                        j = min(j + 1, len(tokenized_text))
+                        if j == len(tokenized_text):
+                            break
+                    if "".join(tokenized_text[i:j]) == f"▁{word}":
+                        word_idx = i
+                        break
+            if not word_idx:
+                print(e, word, tokenized_text)
 
-        # Reconfigure to have an array of layer: embeddings
-        for l in layers:
-            sentence_embedding = encoded_layers[l][0][word_idx]
-            points[l].append(sentence_embedding)
+        batch.append(indexed_tokens)
+        mask.append([1] * len(indexed_tokens))
+        word_indices.append(word_idx)
+
+    tokens_tensor = pad_sequence([torch.from_numpy(np.array(x)) for x in batch], batch_first=True).to(device)
+    masks_tensor = pad_sequence([torch.from_numpy(np.array(x)) for x in mask], batch_first=True).to(device)
+
+    # Predict hidden states features for each layer
+    with torch.no_grad():
+        # (batch_size, sequence_length, hidden_size) * (1 + num_hidden_layers)
+        encoded_layers, *_ = model(
+            input_ids=tokens_tensor, attention_mask=masks_tensor, output_hidden_states=True
+        ).hidden_states
+
+    for i, idx in enumerate(word_indices):
+        points.append(encoded_layers[i][idx].cpu().numpy())
 
     points = np.asarray(points)
+
     return points
 
 
@@ -174,11 +183,6 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("device : ", device)
 
-    word_list = []
-    len_list = [0, ]
-    pointer = 0
-    s = torch.zeros((13928506, 768), device=torch.device("cpu"))
-
     # Load pre-trained model tokenizer (vocabulary)
     tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
     # Load pre-trained model (weights)
@@ -186,8 +190,13 @@ def main():
     model.eval()
     model = model.to(device)
 
+    word_list = []
+    len_list = [0, ]
+    pointer = 0
+    s = np.memmap('./static/s.dat', mode="w+", shape=(13928506, model.config.hidden_size), dtype=np.float32)
+
     # Get selection of sentences from wikipedia.
-    with open('static/words.json', "r") as f:
+    with open('./static/words.json', "r") as f:
         words = json.load(f)
 
     if os.path.exists("./static/sentences.pkl"):
@@ -196,12 +205,12 @@ def main():
         sentences = get_sentences()
         joblib.dump(sentences, "./static/sentences.pkl")
 
-    for word in tqdm(words):
+    for i, word in tqdm(enumerate(words), total=len(words)):
         # Filter out sentences that don't have the word.
         sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
 
         # Take at most 200 sentences.
-        sentences_w_word = sentences_w_word[:100]  # Changed from default
+        sentences_w_word = sentences_w_word[:80]  # Changed from default
 
         # And don't show anything if there are less than 100 sentences.
         if len(sentences_w_word) > 50:  # Changed from default
@@ -211,19 +220,22 @@ def main():
             except TypeError as e:
                 print(e)
                 continue
-            with open('static/jsons/%s.json' % word, 'w') as outfile:
-                json.dump(locs_and_data, outfile)
+            np.savez(f'./static/jsons/{word}.pkl', locs_and_data)
 
             cur_len = locs_and_data['points'].shape[0]
             word_list += [word] * cur_len
-            v = torch.from_numpy(locs_and_data['points'])
-            s[pointer:pointer + cur_len] = v
+            print(s[pointer:(pointer + cur_len)].shape, locs_and_data['points'].shape)
+            s[pointer:(pointer + cur_len)] = locs_and_data['points']
             pointer = pointer + cur_len
             len_list.append(pointer)
 
-    torch.save(s[:pointer], 's.pt')
-    joblib.dump(word_list, 'word_list.pkl')
-    joblib.dump(len_list, 'len_list.pkl')
+        if (i + 1) % 1000 == 0:
+            s.flush()
+
+    joblib.dump(word_list, './static/word_list.pkl')
+    joblib.dump(len_list, './static/len_list.pkl')
+    s.flush()
+    del s
 
     # Store an updated json with the filtered words.
     filtered_words = []
