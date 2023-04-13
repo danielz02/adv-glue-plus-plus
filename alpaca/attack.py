@@ -12,7 +12,7 @@ from tqdm import tqdm
 from copy import deepcopy
 
 from CW_attack import CarliniL2
-from util import logger, root_dir, args
+import util
 import models
 from transformers import BertTokenizer, BertModel, BertForMaskedLM
 
@@ -37,13 +37,13 @@ class YelpDataset(Dataset):
 
     def __len__(self):
         if not self.raw:
-            return len(self.data) // args.scale
+            return len(self.data)
         else:
             return len(self.data)
 
     def __getitem__(self, index):
         if not self.raw:
-            return self.data[index * args.scale]
+            return self.data[index]
         else:
             return self.data[index]
 
@@ -462,25 +462,20 @@ def validate():
 
 
 if __name__ == '__main__':
-    logger.info("Start attack")
-    model = models.BertC(dropout=args.dropout, num_class=5)
-    try:
-        model.load_state_dict(torch.load(args.load, map_location=torch.device('cuda')))
-    except RuntimeError:
-        model.load_state_dict({k.replace('module.', ''): v for k, v in torch.load(args.load, map_location=torch.device('cuda')).items()})
-    device = torch.device("cuda")
-    model = model.to(device)
+    args = util.get_args()
+    args.output_dir = os.path.join(args.output_dir, args.model, args.task)
+    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.dataset_dir, exist_ok=True)
+    logger = util.init_logger(args.output_dir)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
+    model = AutoModelForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
+    model.to(device)
     model.eval()
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
+
     # Set the random seed manually for reproducibility.
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        if not args.cuda:
-            print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-        else:
-            torch.cuda.manual_seed(args.seed)
-    random.seed(args.seed)
-    test_data = load_dataset("glue", args.test_data, cache_dir="/scratch/bbkc/danielz/.cache/", split="validation")
+    util.set_seed(args.seed)
+    test_data = load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation")
 
     cw_word_attack(test_data)
     validate()
