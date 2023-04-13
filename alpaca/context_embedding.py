@@ -110,9 +110,18 @@ def get_embeddings(word, sentences, model, tokenizer, device):
     # Predict hidden states features for each layer
     with torch.no_grad():
         # (batch_size, sequence_length, hidden_size) * (1 + num_hidden_layers)
-        encoded_layers, *_ = model(
-            input_ids=tokens_tensor, attention_mask=masks_tensor, output_hidden_states=True
-        ).hidden_states
+        batch_size = tokens_tensor.size(0)
+
+        encoded_layers = torch.concat([
+            model(
+                input_ids=tokens_tensor[:(batch_size // 2)], attention_mask=masks_tensor[:(batch_size // 2)],
+                output_hidden_states=True
+            ).hidden_states[0],
+            model(
+                input_ids=tokens_tensor[(batch_size // 2):], attention_mask=masks_tensor[(batch_size // 2):],
+                output_hidden_states=True
+            ).hidden_states[0]
+        ], dim=0)
 
     for i, idx in enumerate(word_indices):
         points.append(encoded_layers[i][idx].cpu().numpy())
@@ -210,7 +219,7 @@ def main():
         sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
 
         # Take at most 200 sentences.
-        sentences_w_word = sentences_w_word[:80]  # Changed from default
+        sentences_w_word = sentences_w_word[:100]  # Changed from default
 
         # And don't show anything if there are less than 100 sentences.
         if len(sentences_w_word) > 50:  # Changed from default
