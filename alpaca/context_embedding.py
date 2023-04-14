@@ -84,8 +84,7 @@ def get_embeddings(word, sentences, model, tokenizer, device):
     word_indices = []
 
     max_len = 512
-    print('Getting embeddings for %d sentences ' % len(sentences))
-    for sentence in tqdm(sentences):
+    for sentence in sentences:
         sentence = '</s> ' + sentence + ' </s>'  # Changed to LlaMA bos and eos tokens
         tokenized_text = tokenizer.tokenize(sentence)  # </s> is not added automatically when calling tokenizer.tokenize
 
@@ -255,24 +254,24 @@ def main():
 
                 # And don't show anything if there are less than 100 sentences.
                 if len(sentences_w_word) > 50:  # Changed from default
-                    print('starting process for word : %s' % word)
-                    comm.send(
-                        (word, sentences_w_word),
-                        dest=source, tag=tags.START
-                    )
-            elif tag == tags.DONE:
-                print(f"Got data from worker {source}")
+                    comm.send((word, sentences_w_word), dest=source, tag=tags.START)
+                    task_index += 1
+        elif tag == tags.DONE:
+            print(f"Got data from worker {source}")
+            pbar.update(1)
+            if data is None:
+                continue
+            else:
                 word, locs_and_data = data
                 np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
                 cur_len = locs_and_data['points'].shape[0]
                 s[pointer:(pointer + cur_len)] = locs_and_data['points']
                 pointer = pointer + cur_len
                 len_list.append(pointer)
-                pbar.update()
 
-                if (task_index % 1000) == 0:
-                    s.flush()
-            elif tag == tags.EXIT:
+            if (task_index % 1000) == 0:
+                s.flush()
+        elif tag == tags.EXIT:
                 print("Worker %d exited." % source)
                 closed_workers += 1
 
@@ -280,6 +279,7 @@ def main():
     joblib.dump(len_list, './static/len_list.pkl')
     s.flush()
     del s
+    pbar.close()
 
     # Store an updated json with the filtered words.
     filtered_words = []
@@ -304,7 +304,13 @@ def worker():
 
         if tag == tags.START:
             word, sentences_w_word = data
-            locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
+            try:
+                locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
+            except ValueError as e:
+                print(e)
+                comm.send(None, dest=0, tag=tags.DONE)
+                continue
+            print(f'finished processing for word : {word}')
             comm.send((word, locs_and_data), dest=0, tag=tags.DONE)
         elif tag == tags.EXIT:
             break
