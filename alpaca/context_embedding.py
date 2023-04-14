@@ -16,7 +16,6 @@
 """Preprocessing the data."""
 
 import os
-import pickle
 
 import joblib
 import torch
@@ -31,10 +30,25 @@ import json
 from tqdm import tqdm
 import nltk
 
+from mpi4py import MPI
+
+
 DB_PATH = './corpora/enwiki-20170820.db'
 nltk.download('averaged_perceptron_tagger', download_dir="./corpora")
 nltk.download('punkt', download_dir="./corpora/")
 nltk.data.path = "./corpora/wordnet"
+
+
+def enum(*sequential, **named):
+    """Handy way to fake an enumerated type in Python
+    https://stackoverflow.com/questions/36932/how-can-i-represent-an-enum-in-python
+    """
+    enums = dict(zip(sequential, range(len(sequential))), **named)
+    return type('Enum', (), enums)
+
+
+# Define MPI message tags
+tags = enum('READY', 'DONE', 'EXIT', 'START')
 
 
 def neighbors(word, sentences, model, tokenizer, device):
@@ -188,9 +202,9 @@ def get_poses(word, sentences):
     return sent_data
 
 
-def main():
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print("device : ", device)
+def init_models():
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    print(f"rank {rank} device : {device}")
 
     # Load pre-trained model tokenizer (vocabulary)
     tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
@@ -199,10 +213,11 @@ def main():
     model.eval()
     model = model.to(device)
 
-    word_list = []
-    len_list = [0, ]
-    pointer = 0
-    s = np.memmap('./static/s.dat', mode="w+", shape=(13928506, model.config.hidden_size), dtype=np.float32)
+    return device, tokenizer, model
+
+
+def main():
+    s = np.memmap('./static/s.dat', mode="w+", shape=(13928506, 4096), dtype=np.float32)
 
     # Get selection of sentences from wikipedia.
     with open('./static/words.json', "r") as f:
@@ -214,32 +229,48 @@ def main():
         sentences = get_sentences()
         joblib.dump(sentences, "./static/sentences.pkl")
 
-    for i, word in tqdm(enumerate(words), total=len(words)):
-        # Filter out sentences that don't have the word.
-        sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
+    len_list = [0, ]
+    word_list = []
+    pointer = 0
 
-        # Take at most 200 sentences.
-        sentences_w_word = sentences_w_word[:100]  # Changed from default
+    task_index = 0
+    closed_workers = 0
+    num_workers = size - 1
 
-        # And don't show anything if there are less than 100 sentences.
-        if len(sentences_w_word) > 50:  # Changed from default
-            print('starting process for word : %s' % word)
-            try:
-                locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
-            except TypeError as e:
-                print(e)
-                continue
-            np.savez(f'./static/jsons/{word}.pkl', locs_and_data)
+    while closed_workers < num_workers:
+        data = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+        source = status.Get_source()
+        tag = status.Get_tag()
 
-            cur_len = locs_and_data['points'].shape[0]
-            word_list += [word] * cur_len
-            print(s[pointer:(pointer + cur_len)].shape, locs_and_data['points'].shape)
-            s[pointer:(pointer + cur_len)] = locs_and_data['points']
-            pointer = pointer + cur_len
-            len_list.append(pointer)
+        if tag == tags.READY:
+            if task_index < len(words):
+                word = words[task_index]
+                sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
 
-        if (i + 1) % 1000 == 0:
-            s.flush()
+                # Take at most 200 sentences.
+                sentences_w_word = sentences_w_word[:100]  # Changed from default
+
+                # And don't show anything if there are less than 100 sentences.
+                if len(sentences_w_word) > 50:  # Changed from default
+                    print('starting process for word : %s' % word)
+                    comm.send(
+                        (word, sentences_w_word),
+                        dest=source, tag=tags.START
+                    )
+            elif tag == tags.DONE:
+                print(f"Got data from worker {source}")
+                word, locs_and_data = data
+                np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
+                cur_len = locs_and_data['points'].shape[0]
+                s[pointer:(pointer + cur_len)] = locs_and_data['points']
+                pointer = pointer + cur_len
+                len_list.append(pointer)
+
+                if (task_index % 1000) == 0:
+                    s.flush()
+            elif tag == tags.EXIT:
+                print("Worker %d exited." % source)
+                closed_workers += 1
 
     joblib.dump(word_list, './static/word_list.pkl')
     joblib.dump(len_list, './static/len_list.pkl')
@@ -257,5 +288,35 @@ def main():
     print(filtered_words)
 
 
+def worker():
+    name = MPI.Get_processor_name()
+    print("I am a worker with rank %d on %s." % (rank, name))
+    device, tokenizer, model = init_models()
+
+    while True:
+        comm.send(None, dest=0, tag=tags.READY)
+        data = comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
+        tag = status.Get_tag()
+
+        if tag == tags.START:
+            word, sentences_w_word = data
+            locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
+            comm.send((word, locs_and_data), dest=0, tag=tags.DONE)
+        elif tag == tags.EXIT:
+            break
+
+    comm.send(None, dest=0, tag=tags.EXIT)
+
+
 if __name__ == '__main__':
-    main()
+    comm = MPI.COMM_WORLD  # get MPI communicator object
+    size = comm.size  # total number of processes
+    rank = comm.rank  # rank of this process
+    local_rank = os.environ["OMPI_COMM_WORLD_LOCAL_RANK"]  # Only works for OpenMPI
+    status = MPI.Status()  # get MPI status object
+
+    if rank == 0:
+        print(f"Running on {comm.size} cores")
+        main()
+    else:
+        worker()
