@@ -113,7 +113,9 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 
-
+unk_id = 0  # LlamaTokenizer <unk> token
+bos_id = 1
+eos_id = 2
 # PAD = 0
 # UNK = 1
 # # not part of the qa vocab, assigned with minus index
