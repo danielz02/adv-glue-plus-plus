@@ -203,7 +203,8 @@ def get_poses(word, sentences):
 
 
 def init_models():
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    # TODO: Change GPU assignment for multi-node
+    device = torch.device(f"cuda:{int(local_rank) - 1}" if torch.cuda.is_available() else "cpu")
     print(f"rank {rank} device : {device}")
 
     # Load pre-trained model tokenizer (vocabulary)
@@ -237,6 +238,8 @@ def main():
     closed_workers = 0
     num_workers = size - 1
 
+    pbar = tqdm(total=len(words))
+
     while closed_workers < num_workers:
         data = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
         source = status.Get_source()
@@ -265,6 +268,7 @@ def main():
                 s[pointer:(pointer + cur_len)] = locs_and_data['points']
                 pointer = pointer + cur_len
                 len_list.append(pointer)
+                pbar.update()
 
                 if (task_index % 1000) == 0:
                     s.flush()
