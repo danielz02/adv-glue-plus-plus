@@ -32,7 +32,6 @@ import nltk
 
 from mpi4py import MPI
 
-
 DB_PATH = './corpora/enwiki-20170820.db'
 nltk.download('averaged_perceptron_tagger', download_dir="./corpora")
 nltk.download('punkt', download_dir="./corpora/")
@@ -236,8 +235,10 @@ def main():
     task_index = 0
     closed_workers = 0
     num_workers = size - 1
+    task_bundle_size = 20
 
     pbar = tqdm(total=len(words))
+    comm.barrier()
 
     while closed_workers < num_workers:
         data = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
@@ -245,35 +246,39 @@ def main():
         tag = status.Get_tag()
 
         if tag == tags.READY:
-            if task_index < len(words):
-                word = words[task_index]
-                sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
+            tasks = []
+            for _ in range(task_bundle_size):
+                if task_index < len(words):
+                    word = words[task_index]
+                    sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
 
-                # Take at most 200 sentences.
-                sentences_w_word = sentences_w_word[:100]  # Changed from default
+                    # Take at most 200 sentences.
+                    sentences_w_word = sentences_w_word[:100]  # Changed from default
 
-                # And don't show anything if there are less than 100 sentences.
-                if len(sentences_w_word) > 50:  # Changed from default
-                    comm.send((word, sentences_w_word), dest=source, tag=tags.START)
+                    # And don't show anything if there are less than 100 sentences.
+                    if len(sentences_w_word) > 50:  # Changed from default
+                        tasks.append((word, sentences_w_word))
                     task_index += 1
+            comm.send(tasks, dest=source, tag=tags.START)
         elif tag == tags.DONE:
-            print(f"Got data from worker {source}")
-            pbar.update(1)
-            if data is None:
-                continue
-            else:
-                word, locs_and_data = data
-                np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
-                cur_len = locs_and_data['points'].shape[0]
-                s[pointer:(pointer + cur_len)] = locs_and_data['points']
-                pointer = pointer + cur_len
-                len_list.append(pointer)
+            print(f"[{rank}] Got data from worker {source}")
+            for task_result in data:
+                if task_result is None:
+                    continue
+                else:
+                    word, locs_and_data = task_result
+                    np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
+                    cur_len = locs_and_data['points'].shape[0]
+                    s[pointer:(pointer + cur_len)] = locs_and_data['points']
+                    pointer = pointer + cur_len
+                    len_list.append(pointer)
+            pbar.update(len(data))
 
-            if (task_index % 1000) == 0:
+            if task_index % 100 == 0:
                 s.flush()
         elif tag == tags.EXIT:
-                print("Worker %d exited." % source)
-                closed_workers += 1
+            print(f"[{rank}] Worker {source} exited.")
+            closed_workers += 1
 
     joblib.dump(word_list, './static/word_list.pkl')
     joblib.dump(len_list, './static/len_list.pkl')
@@ -294,8 +299,9 @@ def main():
 
 def worker():
     name = MPI.Get_processor_name()
-    print("I am a worker with rank %d on %s." % (rank, name))
+    print(f"[{rank}] I am a worker with rank {rank} on {name}.")
     device, tokenizer, model = init_models()
+    comm.barrier()
 
     while True:
         comm.send(None, dest=0, tag=tags.READY)
@@ -303,15 +309,17 @@ def worker():
         tag = status.Get_tag()
 
         if tag == tags.START:
-            word, sentences_w_word = data
-            try:
-                locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
-            except ValueError as e:
-                print(e)
-                comm.send(None, dest=0, tag=tags.DONE)
-                continue
-            print(f'finished processing for word : {word}')
-            comm.send((word, locs_and_data), dest=0, tag=tags.DONE)
+            task_results = []
+            for task_data in data:
+                word, sentences_w_word = task_data
+                try:
+                    locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
+                    task_results.append((word, locs_and_data))
+                except ValueError as e:
+                    print(e)
+                    task_results.append(None)
+                print(f'[{rank}] finished processing for word : {word}')
+            comm.send(task_results, dest=0, tag=tags.DONE)
         elif tag == tags.EXIT:
             break
 
