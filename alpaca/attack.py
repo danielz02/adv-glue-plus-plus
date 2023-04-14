@@ -6,76 +6,15 @@ import os
 import numpy as np
 import torch
 from datasets import load_dataset
+import copy
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from copy import deepcopy
 
 from CW_attack import CarliniL2
 import util
-import models
-from transformers import BertTokenizer, BertModel, BertForMaskedLM
-
-import sys
-from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoTokenizer
-from bert_score import BERTScorer
-
-
-class YelpDataset(Dataset):
-    def __init__(self, path_or_raw, raw=False):
-        self.raw = raw
-        if not self.raw:
-            self.data = joblib.load(path_or_raw)
-        else:
-            self.max_len = 512
-            self.data = path_or_raw
-            tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-            for data in self.data:
-                data['seq'] = tokenizer.encode(('[CLS] ' + data['adv_text']))
-                if len(data['seq']) > self.max_len:
-                    data['seq'] = data['seq'][:self.max_len]
-
-    def __len__(self):
-        if not self.raw:
-            return len(self.data)
-        else:
-            return len(self.data)
-
-    def __getitem__(self, index):
-        if not self.raw:
-            return self.data[index]
-        else:
-            return self.data[index]
-
-
-def cal_ppl(text, model, tokenizer):
-    assert isinstance(text, list)
-    encodings = tokenizer('\n\n'.join(text), return_tensors='pt')
-    max_length = model.config.n_positions
-    stride = 512
-    lls = []
-    for i in tqdm(range(0, encodings.input_ids.size(1), stride)):
-        begin_loc = max(i + stride - max_length, 0)
-        end_loc = min(i + stride, encodings.input_ids.size(1))
-        trg_len = end_loc - i  # may be different from stride on last loop
-        input_ids = encodings.input_ids[:, begin_loc:end_loc].to('cuda')
-        target_ids = input_ids.clone()
-        target_ids[:, :-trg_len] = -100
-
-        with torch.no_grad():
-            outputs = model(input_ids, labels=target_ids)
-            log_likelihood = outputs[0] * trg_len
-
-        lls.append(log_likelihood)
-
-    ppl = torch.exp(torch.stack(lls).sum() / end_loc).item()
-
-    return ppl
-
-
-def cal_bert_score(cands, refs, scorer):
-    _, _, f1 = scorer.score(cands, refs)
-    return f1.mean()
+# from transformers import BertTokenizer, BertModel, BertForMaskedLM
+from transformers import LlamaTokenizer, LlamaForCausalLM
 
 
 def transform(seq, unk_words_dict=None):
@@ -85,20 +24,49 @@ def transform(seq, unk_words_dict=None):
         seq = seq.squeeze().cpu().numpy().tolist()
     unk_count = 0
     for x in seq:
-        if x == 100:
+        if x == util.unk_id:
             unk_count += 1
-    if unk_count == 0 or len(unk_words_dict) == 0:
-        return tokenizer.convert_tokens_to_string([tokenizer._convert_id_to_token(x) for x in seq])
+    if unk_count == 0:
+        return tokenizer.convert_tokens_to_string([tokenizer._convert_id_to_token(x) for x in seq if x not in [1, 2]])
     else:
-        tokens = []
+        tokens_lists = [[]]
         for idx, x in enumerate(seq):
-            if x == 100 and len(unk_words_dict[idx]) != 0:
+            if x in [util.bos_id, util.eos_id]:
+                continue
+            if x == util.unk_id:
                 unk_words = unk_words_dict[idx]
-                unk_word = random.choice(unk_words)
-                tokens.append(unk_word)
+                cur_size = len(tokens_lists)
+                size = len(unk_words)
+                new_tokens_lists = []
+                for copy_time in range(size):
+                    if len(new_tokens_lists) > 100:
+                        continue
+                    new_tokens_lists += copy.deepcopy(tokens_lists)
+                tokens_lists = new_tokens_lists
+                for unk_idx in range(size):
+                    for i in range(cur_size):
+                        full_idx = unk_idx * cur_size + i
+                        if full_idx < len(tokens_lists):
+                            tokens_lists[full_idx].append(unk_words[unk_idx])
             else:
-                tokens.append(tokenizer._convert_id_to_token(x))
-        return tokenizer.convert_tokens_to_string(tokens)
+                for tokens_idx in range(len(tokens_lists)):
+                    tokens_lists[tokens_idx].append(tokenizer._convert_id_to_token(x))
+        return [tokenizer.convert_tokens_to_string(tokens) for tokens in tokens_lists]
+
+
+def init_dict():
+    return {util.bos_id: [util.bos_id], util.eos_id: [util.eos_id]}
+
+
+def get_word_from_token(token):
+    token.lower()
+
+
+def transform_token(orig_token, new_word_list):
+    if orig_token.lower().capitalize() == orig_token:
+        return [new_word.capitalize() for new_word in new_word_list]
+    else:
+        return new_word_list
 
 
 def difference(a, b):
@@ -110,93 +78,88 @@ def difference(a, b):
     return tot
 
 
-def get_similar_dict(similar_dict):
-    similar_char_dict = {0: [0], 101: [101]}
-    for k, v in similar_dict.items():
-        k = tokenizer._convert_token_to_id(k)
-        v = [tokenizer._convert_token_to_id(x[0]) for x in v]
-        if k not in v:
-            v.append(k)
-        while 100 in v:
-            v.remove(100)
-        if len(v) >= 1:
-            similar_char_dict[k] = v
-        else:
-            similar_char_dict[k] = [k]
+def get_cluster_dict(input_cluster_dict, input_ids):
+    cluster_dict = init_dict()
+    input_ids = input_ids.squeeze().cpu().numpy().tolist()
+    token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
+    for i in range(len(token_list)):
+        if input_ids[i] in cluster_dict:
+            continue
+        word = get_word_from_token(token_list[i])
+        if word not in input_cluster_dict:
+            cluster_dict[input_ids[i]] = [input_ids[i]]
+            continue
+        candidates = input_cluster_dict[word]
+        candidates = [x[0] for x in candidates]
+        candidates = transform_token(token_list[i], candidates)
+        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
+        if input_ids[i] not in candidates:
+            candidates.append(input_ids[i])
+        while util.unk_id in candidates:
+            candidates.remove(util.unk_id)
+        cluster_dict[input_ids[i]] = candidates
 
-    return similar_char_dict
+    return cluster_dict
 
 
-def get_knowledge_dict(input_knowledge_dict):
-    knowledge_dict = {0: [0], 101: [101]}
-    for k, v in input_knowledge_dict.items():
-        k = tokenizer._convert_token_to_id(k)
-        v = [tokenizer._convert_token_to_id(x[0]) for x in v]
-        if k not in v:
-            v.append(k)
-        while 100 in v:
-            v.remove(100)
-        if len(v) >= 1:
-            knowledge_dict[k] = v
-        else:
-            knowledge_dict[k] = [k]
+def get_knowledge_dict(input_knowledge_dict, input_ids):
+    knowledge_dict = init_dict()
+    input_ids = input_ids.squeeze().cpu().numpy().tolist()
+    token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
+    for i in range(len(token_list)):
+        if input_ids[i] in knowledge_dict:
+            continue
+        word = get_word_from_token(token_list[i])
+        if word not in input_knowledge_dict:
+            knowledge_dict[input_ids[i]] = [input_ids[i]]
+            continue
+        candidates = input_knowledge_dict[word]
+        candidates = [x[0] for x in candidates]
+        candidates = transform_token(token_list[i], candidates)
+        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
+        if input_ids[i] not in candidates:
+            candidates.append(input_ids[i])
+        while util.unk_id in candidates:
+            candidates.remove(util.unk_id)
+        knowledge_dict[input_ids[i]] = candidates
 
     return knowledge_dict
 
 
-def get_bug_dict(input_bug_dict, input_ids):
-    bug_dict = {0: [0], 101: [101]}
-    unk_words_dict = {}
+def get_typo_dict(input_typo_dict, input_ids):
+    typo_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
-    unk_cnt = 0
-    for x in input_ids:
-        if x == 100:
-            unk_cnt += 1
     token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
+    unk_words_dict = {}
     for i in range(len(token_list)):
-        if input_ids[i] in bug_dict:
+        if input_ids[i] in typo_dict:
             for j in range(len(token_list)):
                 if input_ids[i] == input_ids[j]:
                     if j in unk_words_dict:
                         unk_words_dict[i] = unk_words_dict[j]
                     break
             continue
-        word = token_list[i]
-        if word not in input_bug_dict:
-            bug_dict[input_ids[i]] = [input_ids[i]]
+        word = get_word_from_token(token_list[i])
+        if word not in input_typo_dict:
+            typo_dict[input_ids[i]] = [input_ids[i]]
             continue
-        candidates = input_bug_dict[word]
-        unk_id = 100
-        unk_list = []
-        for unk_word in [x[0] for x in candidates if tokenizer._convert_token_to_id(x[0]) == unk_id]:
-            adv_seq = deepcopy(token_list)
-            adv_seq[i] = unk_word
-            adv_seq = tokenizer.encode(tokenizer.convert_tokens_to_string(adv_seq))
-            adv_unk_cnt = 0
-            for x in adv_seq:
-                if x == 100:
-                    adv_unk_cnt += 1
-            if adv_unk_cnt == unk_cnt + 1:
-                unk_list = [unk_word]
-                break
-        unk_words_dict[i] = unk_list
-        candidates = [tokenizer._convert_token_to_id(x[0]) for x in candidates]
+        candidates = input_typo_dict[word]
+        candidates = [x[0] for x in candidates]
+        candidates = transform_token(token_list[i], candidates)
+        unk_words_dict[i] = [x for x in candidates if tokenizer._convert_token_to_id(x) == util.unk_id]
+        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
         if input_ids[i] not in candidates:
             candidates.append(input_ids[i])
-        if len(unk_list) == 0:
-            while 100 in candidates:
-                candidates.remove(100)
-        if input_ids[i] not in candidates:
-            candidates.append(input_ids[i])
-        bug_dict[input_ids[i]] = candidates
+        typo_dict[input_ids[i]] = candidates
 
-    return bug_dict, unk_words_dict
+    return typo_dict, unk_words_dict
 
 
 def cw_word_attack(data_val):
     logger.info("Begin Attack")
-    logger.info(("const confidence:", args.const, args.confidence))
+    logger.info(("const confidence lr:", args.const, args.confidence, args.lr))
 
+    orig_failures = 0
     adv_correct = 0
     targeted_success = 0
     untargeted_success = 0
@@ -388,79 +351,6 @@ def check_consistency():
     return adv_text
 
 
-def validate():
-    logger.info("Start validation")
-
-    adv_text = joblib.load(os.path.join(root_dir, 'adv_text.pkl'))
-    for i in adv_text:
-        i['adv_text'] = i['adv_text'].replace('[CLS] ', '')
-
-    adv_text_dataset = YelpDataset(adv_text, raw=True)
-    test_batch = DataLoader(adv_text_dataset, batch_size=args.batch_size, shuffle=False)
-
-    test_model = models.BertC(dropout=args.dropout, num_class=5)
-    test_model.load_state_dict(torch.load(args.test_model, map_location=torch.device('cuda')))
-    test_model = test_model.to(device)
-    test_model.eval()
-
-    with torch.no_grad():
-        for bi, batch in enumerate(tqdm(test_batch)):
-            batch['seq'] = torch.stack(batch['seq']).t().to(device)
-            batch['seq_len'] = batch['seq_len'].to(device)
-            out = test_model(batch['seq'], batch['seq_len'])
-            logits = out['pred'].detach().cpu()
-            pred = logits.argmax(dim=-1)
-            adv_text[bi]['pred_validated'] = pred[0].item()
-
-    joblib.dump(adv_text, os.path.join(root_dir, 'adv_text_validated.pkl'))
-
-    acc = 0
-    origin_success = 0
-    total = 0
-    total_change = 0
-    total_word = 0
-    orig_text_eval = []
-    adv_text_eval = []
-    for item in tqdm(adv_text):
-        if item['ori_pred'] != item['label']:
-            origin_success += 1
-            continue
-        if args.untargeted and item['pred_validated'] != item['label'] or not args.untargeted and item['pred_validated'] == item['target']:
-            acc += 1
-            total_change += item['diff']
-            total_word += item['seq_len']
-            orig_text_eval.append(item['orig_text'].replace('[CLS]', '').strip())
-            adv_text_eval.append(item['adv_text'].replace('[CLS]', '').strip())
-        total += 1
-
-    global model
-    del model
-    del test_model
-    torch.cuda.empty_cache()
-
-    model_id = 'gpt2-large'
-    ppl_model = GPT2LMHeadModel.from_pretrained(model_id).to('cuda')
-    ppl_tokenizer = GPT2TokenizerFast.from_pretrained(model_id)
-    bs_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
-    orig_ppl = cal_ppl(orig_text_eval, ppl_model, ppl_tokenizer)
-    adv_ppl = cal_ppl(adv_text_eval, ppl_model, ppl_tokenizer)
-    bs = cal_bert_score(adv_text_eval, orig_text_eval, bs_scorer)
-
-    suc = float(acc / total) * 100
-    change_rate = float(total_change / total_word) * 100
-    origin_acc = (1 - origin_success / len(adv_text)) * 100
-
-    logger.info(sys.argv)
-    logger.info('orig acc：{:.1f}%'.format(origin_acc))
-    logger.info('attack success：{:.1f}'.format(acc))
-    logger.info('orig pred success：{:.1f}'.format(total))
-    logger.info('success rate：{:.1f}%'.format(suc))
-    logger.info('change rate: {:.1f}%'.format(change_rate))
-    logger.info('original ppl: {:.1f}'.format(orig_ppl))
-    logger.info('adv ppl: {:.1f}'.format(adv_ppl))
-    logger.info('bert score: {:.3f}'.format(bs))
-
-
 if __name__ == '__main__':
     args = util.get_args()
     args.output_dir = os.path.join(args.output_dir, args.model, args.task)
@@ -469,14 +359,14 @@ if __name__ == '__main__':
     logger = util.init_logger(args.output_dir)
 
     device = torch.device("cuda:0")
-    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    model = AutoModelForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
+    tokenizer = LlamaTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
+    model = LlamaForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
     model.to(device)
     model.eval()
 
     # Set the random seed manually for reproducibility.
     util.set_seed(args.seed)
+    # TODO: load pre-precessed dataset with candidate perturbation set
     test_data = load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation")
 
     cw_word_attack(test_data)
-    validate()
