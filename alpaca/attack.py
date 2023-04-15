@@ -161,194 +161,141 @@ def cw_word_attack(data_val):
 
     orig_failures = 0
     adv_correct = 0
-    targeted_success = 0
-    untargeted_success = 0
     orig_correct = 0
     tot = 0
     tot_diff = 0
     tot_len = 0
     adv_pickle = []
+    changed_rates = []
+    nums_changed = []
+    orig_texts = []
+    adv_texts = []
+    true_labels = []
+    new_labels = []
+    text_len = []
 
-    test_batch = DataLoader(data_val, batch_size=args.batch_size, shuffle=False)
-    cw = CarliniL2(debug=args.debugging, targeted=not args.untargeted, cuda=True)
+    ori_labels = []
+    ori_preds = []
+    preds = []
+
+    test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
+    cw = CarliniL2(debug=False, targeted=True, cuda=True)
     for batch_index, batch in enumerate(tqdm(test_batch)):
+        inputs = tokenizer(batch['sentence'][0], return_tensors="pt", padding='max_length',
+                           max_length=128, truncation=True)
         batch_add_start = batch['add_start'] = []
         batch_add_end = batch['add_end'] = []
-        for i, seq in enumerate(batch['seq_len']):
+        batch['seq_len'] = []
+        for i, sentence in enumerate(batch['sentence']):
             batch['add_start'].append(1)
-            batch['add_end'].append(seq)
+            batch['add_end'].append(inputs['input_ids'][i].cpu().numpy().tolist().index(util.eos_id) - 1)
+            batch['seq_len'].append(batch['add_end'][i])
+        tot += len(batch['label'])
+        inputs = {k: v.to(device) for (k, v) in inputs.items()}
 
-        data = batch['seq'] = torch.stack(batch['seq']).t().to(device)
-        orig_sent = transform(batch['seq'][0])
-
-        seq_len = batch['seq_len'] = batch['seq_len'].to(device)
-        if args.untargeted:
-            attack_targets = batch['label']
+        if batch['label'][0] == 1:
+            attack_targets = torch.full_like(batch['label'], 0)
         else:
-            if args.strategy == 0:
-                if batch['label'][0] == 1:
-                    attack_targets = torch.full_like(batch['label'], 0)
-                else:
-                    attack_targets = torch.full_like(batch['label'], 1)
-            elif args.strategy == 1:
-                if batch['label'][0] < 2:
-                    attack_targets = torch.full_like(batch['label'], 4)
-                else:
-                    attack_targets = torch.full_like(batch['label'], 0)
+            attack_targets = torch.full_like(batch['label'], 1)
         label = batch['label'] = batch['label'].to(device)
         attack_targets = attack_targets.to(device)
 
         # test original acc
-        out = model(batch['seq'], batch['seq_len'])['pred']
+        out = model(**inputs).logits
         prediction = torch.max(out, 1)[1]
         ori_prediction = prediction
-        if ori_prediction[0].item() != label[0].item():
-            continue
         batch['orig_correct'] = torch.sum((prediction == label).float())
+        if prediction.item() != label.item():
+            orig_failures += 1
+            continue
 
         # prepare attack
-        input_embedding = model.bert.embeddings.word_embeddings(data)
+        input_embedding = model.model.bert.embeddings.word_embeddings(inputs['input_ids'])
         cw_mask = np.zeros(input_embedding.shape).astype(np.float32)
         cw_mask = torch.from_numpy(cw_mask).float().to(device)
-        for i, seq in enumerate(batch['seq_len']):
-            cw_mask[i][1:seq] = 1
+        for i, sentence in enumerate(batch['sentence']):
+            cw_mask[i][batch['add_start'][i]:batch['add_end'][i]] = 1
 
-        if args.function == 'all':
-            cluster_char_dict = get_similar_dict(batch['similar_dict'])
-            bug_char_dict, unk_words_dict = get_bug_dict(batch['bug_dict'], batch['seq'][0])
-            similar_char_dict = get_knowledge_dict(batch['knowledge_dict'])
+        cluster_char_dict = get_cluster_dict(batch['cluster_dict'], inputs['input_ids'])
+        typo_dict, unk_words_dict = get_typo_dict(batch['typo_dict'], inputs['input_ids'])
+        knowledge_dict = get_knowledge_dict(batch['knowledge_dict'], inputs['input_ids'])
 
-            for k, v in cluster_char_dict.items():
-                synset = list(set(v + similar_char_dict[k]))
-                while 100 in synset:
-                    synset.remove(100)
-                if len(synset) >= 1:
-                    similar_char_dict[k] = synset
-                else:
-                    similar_char_dict[k] = [k]
+        for k, v in cluster_char_dict.items():
+            synset = list(set(v + knowledge_dict[k]))
+            knowledge_dict[k] = synset
 
-            for k, v in bug_char_dict.items():
-                synset = list(set(v + similar_char_dict[k]))
-                # while 100 in synset:
-                #     synset.remove(100)
-                if len(synset) >= 1:
-                    similar_char_dict[k] = synset
-                else:
-                    similar_char_dict[k] = [k]
+        for k, v in typo_dict.items():
+            synset = list(set(v + knowledge_dict[k]))
+            knowledge_dict[k] = synset
 
-            all_dict = similar_char_dict
-        elif args.function == 'typo':
-            all_dict, unk_words_dict = get_bug_dict(json.loads(batch['bug_dict']), batch['seq'][0])
-        elif args.function == 'knowledge':
-            all_dict = get_knowledge_dict(json.loads(batch['knowledge_dict']))
-            unk_words_dict = None
-        elif args.function == 'cluster':
-            all_dict = get_similar_dict(batch['similar_dict'])
-            unk_words_dict = None
-        else:
-            raise Exception('Unknown perturbation function.')
-
-        cw.wv = all_dict
+        cw.wv = knowledge_dict
         cw.mask = cw_mask
-        cw.seq = data
+        cw.seq = inputs['input_ids']
         cw.batch_info = batch
-        cw.seq_len = seq_len
+        cw.num_classes = len(model.model.config.label2id)
 
         # attack
-        adv_data = cw.run(model, input_embedding, attack_targets)
+        adv_data = cw.run(model, input_embedding, attack_targets, inputs)
         # retest
-        adv_seq = torch.tensor(batch['seq']).to(device)
+        adv_seq = torch.tensor(inputs['input_ids']).to(device)
         for bi, (add_start, add_end) in enumerate(zip(batch_add_start, batch_add_end)):
             if bi in cw.o_best_sent:
                 for i in range(add_start, add_end):
-                    adv_seq.data[bi, i] = all_dict[adv_seq.data[bi, i].item()][cw.o_best_sent[bi][i - add_start]]
+                    adv_seq.data[bi, i] = knowledge_dict[adv_seq.data[bi, i].item()][cw.o_best_sent[bi][i - add_start]]
+        adv_inputs = copy.deepcopy(inputs)
+        adv_inputs['input_ids'] = adv_seq
 
-        out = model(adv_seq, seq_len)['pred']
+        out = model(**adv_inputs).logits
         prediction = torch.max(out, 1)[1]
         orig_correct += batch['orig_correct'].item()
         adv_correct += torch.sum((prediction == label).float()).item()
-        targeted_success += torch.sum((prediction == attack_targets).float()).item()
-        untargeted_success += torch.sum((prediction != label).float()).item()
-        tot += len(batch['label'])
 
         for i in range(len(batch['label'])):
-            diff = difference(adv_seq[i], data[i])
-            adv_pickle.append({
-                'index': batch_index,
-                'adv_text': transform(adv_seq[i], unk_words_dict),
-                'orig_text': transform(batch['seq'][i]),
-                'raw_text': batch['raw_text'][i],
-                'label': label[i].item(),
-                'target': attack_targets[i].item(),
-                'ori_pred': ori_prediction[i].item(),
-                'pred': prediction[i].item(),
-                'diff': diff,
-                'orig_seq': batch['seq'][i].cpu().numpy().tolist(),
-                'adv_seq': adv_seq[i].cpu().numpy().tolist(),
-                'seq_len': batch['seq_len'][i].item()
-            })
-            assert ori_prediction[i].item() == label[i].item()
-            if (args.untargeted and prediction[i].item() != label[i].item()) or (not args.untargeted and prediction[i].item() == attack_targets[i].item()):
-                tot_diff += diff
-                tot_len += batch['seq_len'][i].item()
-                if batch_index % 100 == 0:
-                    try:
-                        logger.info(("tot:", tot))
-                        logger.info(("avg_seq_len: {:.1f}".format(tot_len / tot)))
-                        logger.info(("avg_diff: {:.1f}".format(tot_diff / tot)))
-                        logger.info(("avg_diff_rate: {:.1f}%".format(tot_diff / tot_len * 100)))
-                        logger.info(("orig_correct: {:.1f}%".format(orig_correct / tot * 100)))
-                        logger.info(("adv_correct: {:.1f}%".format(adv_correct / tot * 100)))
-                        if args.untargeted:
-                            logger.info(("targeted successful rate: {:.1f}%".format(targeted_success / tot * 100)))
-                            logger.info(("*untargeted successful rate: {:.1f}%".format(untargeted_success / tot * 100)))
-                        else:
-                            logger.info(("*targeted successful rate: {:.1f}%".format(targeted_success / tot * 100)))
-                            logger.info(("untargeted successful rate: {:.1f}%".format(untargeted_success / tot * 100)))
-                    except:
-                        continue
-    joblib.dump(adv_pickle, os.path.join(root_dir, 'adv_text.pkl'))
-    logger.info(("tot:", tot))
-    logger.info(("avg_seq_len: {:.1f}".format(tot_len / tot)))
-    logger.info(("avg_diff: {:.1f}".format(tot_diff / tot)))
-    logger.info(("avg_diff_rate: {:.1f}%".format(tot_diff / tot_len * 100)))
-    logger.info(("orig_correct: {:.1f}%".format(orig_correct / tot * 100)))
-    logger.info(("adv_correct: {:.1f}%".format(adv_correct / tot * 100)))
-    if args.untargeted:
-        logger.info(("targeted successful rate: {:.1f}%".format(targeted_success / tot * 100)))
-        logger.info(("*untargeted successful rate: {:.1f}%".format(untargeted_success / tot * 100)))
-    else:
-        logger.info(("*targeted successful rate: {:.1f}%".format(targeted_success / tot * 100)))
-        logger.info(("untargeted successful rate: {:.1f}%".format(untargeted_success / tot * 100)))
-    logger.info(("const confidence:", args.const, args.confidence))
+            diff = difference(adv_seq[i], inputs['input_ids'][i])
+            tot_diff += diff
+            tot_len += batch['seq_len'][i]
+            changed_rate = 1.0 * diff / batch['seq_len'][i]
+            if ori_prediction[i].item() == label[i].item() and prediction[i].item() == attack_targets[i].item():
+                changed_rates.append(changed_rate)
+                nums_changed.append(diff)
+                orig_texts.append(transform(inputs['input_ids'][i]))
+                adv_texts.append(transform(adv_seq[i], unk_words_dict))
+                true_labels.append(label[i].item())
+                new_labels.append(prediction[i].item())
+                text_len.append(batch['seq_len'][i])
+            ori_labels.append(label[i].item())
+            ori_preds.append(ori_prediction[i].item())
+            preds.append(prediction[i].item())
 
+    message = 'For target model {}:\noriginal accuracy: {:.2f}%,\nadv accuracy: {:.2f}%,\n' \
+              'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'.format(args.model,
+                                                                                   (1 - orig_failures / len(test_batch)) * 100,
+                                                                                   (adv_correct / len(test_batch)) * 100,
+                                                                                   len(adv_texts) / (len(test_batch) - orig_failures) * 100,
+                                                                                   np.mean(changed_rates) * 100)
+    logger.info(message)
 
-def check_consistency():
-    logger.info("Start checking consistency")
+    joblib.dump({'ori_labels': ori_labels, 'ori_preds': ori_preds, 'preds': preds},
+                os.path.join(args.output_dir, 'labels.pkl'))
 
-    adv_text = joblib.load(os.path.join(root_dir, 'adv_text.pkl'))
-    for i in adv_text:
-        i['adv_text'] = i['adv_text'].replace('[CLS] ', '')
-
-    adv_text = YelpDataset(adv_text, raw=True)
-    test_batch = DataLoader(adv_text, batch_size=args.batch_size, shuffle=False)
-
-    inconsistent = []
-    with torch.no_grad():
-        for bi, batch in enumerate(tqdm(test_batch)):
-            batch['seq'] = torch.stack(batch['seq']).t().to(device)
-            batch['seq_len'] = batch['seq_len'].to(device)
-            out = model(batch['seq'], batch['seq_len'])
-            logits = out['pred'].detach().cpu()
-            pred = logits.argmax(dim=-1)
-            if pred[0].item() != batch['pred'][0]:
-                inconsistent.append((bi, batch))
-
-    logger.info("Num of inconsistent: {}".format(len(inconsistent)))
-    if len(inconsistent) != 0:
-        joblib.dump(inconsistent, os.path.join(root_dir, 'inconsistent_adv.pkl'))
-
-    return adv_text
+    results = []
+    for i in range(len(changed_rates)):
+        save_dict = {}
+        save_dict['orig_text'] = orig_texts[i]
+        save_dict['orig_y'] = true_labels[i]
+        save_dict['pred_y'] = new_labels[i]
+        save_dict['diff'] = nums_changed[i]
+        save_dict['diff_ratio'] = changed_rates[i]
+        save_dict['seq_len'] = text_len[i]
+        if isinstance(adv_texts[i], str):
+            save_dict['adv_text'] = adv_texts[i]
+            results.append(save_dict)
+        else:
+            for t in adv_texts[i]:
+                new_save_dict = copy.deepcopy(save_dict)
+                new_save_dict['adv_text'] = t
+                results.append(new_save_dict)
+    joblib.dump(results, os.path.join(args.output_dir, 'attack_results.pkl'))
 
 
 if __name__ == '__main__':
