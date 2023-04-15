@@ -32,7 +32,6 @@ import nltk
 
 from mpi4py import MPI
 
-
 DB_PATH = './corpora/enwiki-20170820.db'
 nltk.download('averaged_perceptron_tagger', download_dir="./corpora")
 nltk.download('punkt', download_dir="./corpora/")
@@ -84,8 +83,7 @@ def get_embeddings(word, sentences, model, tokenizer, device):
     word_indices = []
 
     max_len = 512
-    print('Getting embeddings for %d sentences ' % len(sentences))
-    for sentence in tqdm(sentences):
+    for sentence in sentences:
         sentence = '</s> ' + sentence + ' </s>'  # Changed to LlaMA bos and eos tokens
         tokenized_text = tokenizer.tokenize(sentence)  # </s> is not added automatically when calling tokenizer.tokenize
 
@@ -192,7 +190,7 @@ def get_poses(word, sentences):
         try:
             word_idx = text.index(word)
             pos_tag = pos[word_idx][1]
-        except:
+        except ValueError:
             pos_tag = 'X'
         sent_data.append({
             'sentence': sent,
@@ -203,7 +201,9 @@ def get_poses(word, sentences):
 
 
 def init_models():
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    # FIXME: This only works with -np "$SLURM_NTASKS" --map-by ppr:5:node --rank-by slot --report-bindings
+    gpu_dev = int(local_rank) - 1 if rank <= 4 else int(local_rank)
+    device = torch.device(f"cuda:{gpu_dev}" if torch.cuda.is_available() else "cpu")
     print(f"rank {rank} device : {device}")
 
     # Load pre-trained model tokenizer (vocabulary)
@@ -236,46 +236,60 @@ def main():
     task_index = 0
     closed_workers = 0
     num_workers = size - 1
+    task_bundle_size = 5
+
+    pbar = tqdm(total=len(words))
 
     while closed_workers < num_workers:
         data = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
         source = status.Get_source()
         tag = status.Get_tag()
+        print(f"[{rank}] Received data from worker {source} with tag {tag}...")
 
         if tag == tags.READY:
-            if task_index < len(words):
-                word = words[task_index]
-                sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
+            print(f"[{rank}] Sending tasks to worker {source}...")
+            tasks = []
+            for _ in range(task_bundle_size):
+                if task_index < len(words):
+                    word = words[task_index]
+                    sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
 
-                # Take at most 200 sentences.
-                sentences_w_word = sentences_w_word[:100]  # Changed from default
+                    # Take at most 200 sentences.
+                    sentences_w_word = sentences_w_word[:100]  # Changed from default
 
-                # And don't show anything if there are less than 100 sentences.
-                if len(sentences_w_word) > 50:  # Changed from default
-                    print('starting process for word : %s' % word)
-                    comm.send(
-                        (word, sentences_w_word),
-                        dest=source, tag=tags.START
-                    )
-            elif tag == tags.DONE:
-                print(f"Got data from worker {source}")
-                word, locs_and_data = data
-                np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
-                cur_len = locs_and_data['points'].shape[0]
-                s[pointer:(pointer + cur_len)] = locs_and_data['points']
-                pointer = pointer + cur_len
-                len_list.append(pointer)
+                    # And don't show anything if there are less than 100 sentences.
+                    if len(sentences_w_word) > 50:  # Changed from default
+                        tasks.append((word, sentences_w_word))
+                    task_index += 1
+            request = comm.isend(tasks, dest=source, tag=(tags.START if task_index < len(words) else tags.EXIT))
+            print(f"[{rank}] Sent {len(tasks)} tasks to worker {source}")
+        elif tag == tags.DONE:
+            print(f"[{rank}] Received results from worker {source}")
+            for task_result in data:
+                if task_result is None:
+                    continue
+                else:
+                    word, locs_and_data = task_result
+                    cur_len = locs_and_data['points'].shape[0]
 
-                if (task_index % 1000) == 0:
-                    s.flush()
-            elif tag == tags.EXIT:
-                print("Worker %d exited." % source)
-                closed_workers += 1
+                    s[pointer:(pointer + cur_len)] = locs_and_data['points']
+                    np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
+
+                    pointer = pointer + cur_len
+                    len_list.append(pointer)
+            pbar.update(len(data))
+
+            if task_index % 100 == 0:
+                s.flush()
+        elif tag == tags.EXIT:
+            print(f"[{rank}] Worker {source} exited.")
+            closed_workers += 1
 
     joblib.dump(word_list, './static/word_list.pkl')
     joblib.dump(len_list, './static/len_list.pkl')
     s.flush()
     del s
+    pbar.close()
 
     # Store an updated json with the filtered words.
     filtered_words = []
@@ -286,22 +300,33 @@ def main():
     with open('static/filtered_words.json', 'w') as outfile:
         json.dump(filtered_words, outfile)
     print(filtered_words)
+    print("Master finishing")
 
 
 def worker():
     name = MPI.Get_processor_name()
-    print("I am a worker with rank %d on %s." % (rank, name))
+    print(f"[{rank}] I am a worker with rank {rank} on {name}.")
     device, tokenizer, model = init_models()
 
     while True:
         comm.send(None, dest=0, tag=tags.READY)
+        print(f"[{rank}] Worker {rank} on {name} is ready to receive tasks.")
         data = comm.recv(source=0, tag=MPI.ANY_TAG, status=status)
         tag = status.Get_tag()
 
         if tag == tags.START:
-            word, sentences_w_word = data
-            locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
-            comm.send((word, locs_and_data), dest=0, tag=tags.DONE)
+            print(f'[{rank}] Received {len(data)} tasks')
+            task_results = []
+            for task_data in data:
+                word, sentences_w_word = task_data
+                try:
+                    locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
+                    task_results.append((word, locs_and_data))
+                except ValueError as e:
+                    print(e)
+                    task_results.append(None)
+                print(f'[{rank}] Finished processing for word : {word}')
+            comm.send(task_results, dest=0, tag=tags.DONE)
         elif tag == tags.EXIT:
             break
 
@@ -320,3 +345,4 @@ if __name__ == '__main__':
         main()
     else:
         worker()
+    MPI.Finalize()
