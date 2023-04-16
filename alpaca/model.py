@@ -83,7 +83,7 @@ class Model(nn.Module):
         return log_probs
 
     def forward(self, prompt_token, inputs_embeds=None):
-        label_probs = torch.cat([get_logits(prompt_token, label_token).reshape(1) for label_token in self.label_tokens])
+        label_probs = torch.cat([self.get_logits(prompt_token, label_token).reshape(1) for label_token in self.label_tokens])
         return SequenceClassifierOutput(logits=label_probs)
 
 
