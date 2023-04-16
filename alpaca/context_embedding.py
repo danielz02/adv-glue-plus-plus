@@ -261,7 +261,7 @@ def main():
                     if len(sentences_w_word) > 50:  # Changed from default
                         tasks.append((word, sentences_w_word))
                     task_index += 1
-            request = comm.isend(tasks, dest=source, tag=(tags.START if task_index < len(words) else tags.EXIT))
+            comm.send(tasks, dest=source, tag=(tags.START if task_index < len(words) else tags.EXIT))
             print(f"[{rank}] Sent {len(tasks)} tasks to worker {source}")
         elif tag == tags.DONE:
             print(f"[{rank}] Received results from worker {source}")
@@ -272,8 +272,12 @@ def main():
                     word, locs_and_data = task_result
                     cur_len = locs_and_data['points'].shape[0]
 
-                    s[pointer:(pointer + cur_len)] = locs_and_data['points']
-                    np.savez_compressed(f'./static/pickles/{word}.npz', **locs_and_data)
+                    try:
+                        s[pointer:(pointer + cur_len)] = locs_and_data['points']
+                    except ValueError as e:
+                        print(word, e)
+                        continue
+                    np.savez(f'./static/pickles/{word}.npz', **locs_and_data)
 
                     pointer = pointer + cur_len
                     len_list.append(pointer)
