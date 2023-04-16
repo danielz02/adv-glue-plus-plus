@@ -1,5 +1,9 @@
-from transformers import LlamaTokenizer, LlamaForCausalLM
-from transformers.modeling_outputs import SequenceClassifierOutput
+from typing import Optional, Union, Tuple, List
+
+from transformers import LlamaTokenizer, LlamaForCausalLM, LlamaPreTrainedModel, LlamaModel
+from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import RobertaTokenizer, RobertaForSequenceClassification
+from transformers.modeling_outputs import SequenceClassifierOutput, CausalLMOutputWithPast
 from torch import nn
 from torch.nn.functional import softmax
 import torch
@@ -81,3 +85,47 @@ class Model(nn.Module):
     def forward(self, prompt_token, inputs_embeds=None):
         label_probs = torch.cat([get_logits(prompt_token, label_token).reshape(1) for label_token in self.label_tokens])
         return SequenceClassifierOutput(logits=label_probs)
+
+
+class LlamaForZeroShotSequenceClassification(LlamaForCausalLM):
+    def __init__(self, config):
+        super().__init__(config)
+        self.model = LlamaModel(config)
+
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        pass
