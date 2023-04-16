@@ -20,40 +20,6 @@ task_to_keys = {
     "sst2": ("sentence", None),
 }
 
-instruction = {
-    "sst2": "For the given input text, label the sentiment of the text as positive or negative. The answer should be "
-            "exact 'positive' or 'negative'."
-}
-
-candidate_labels = {
-    "sst2": ["negative", "positive"]
-}
-
-prompt_template = """Below is an instruction that describes a task, paired with an input that provides further context.
-Write a response that appropriately completes the request.
-
-### Instruction:
-{instruction}
-
-### Input:
-{user_input}
-
-### Response:
-
-"""
-
-
-def tokenize(tok, user_input, glue_task, prompt, labels, dev):
-    tok.add_eos_token = False
-    tok.add_bos_token = True
-    prompt_token = tok(prompt, return_tensors="pt").to(dev)
-
-    tok.add_eos_token = True
-    tok.add_bos_token = False
-    label_tokens = [tok(x, return_tensors="pt").to(dev) for x in labels]
-
-    return prompt_token, label_tokens
-
 class Dictionary(object):
     def __init__(self, path=''):
         self.word2idx = dict()

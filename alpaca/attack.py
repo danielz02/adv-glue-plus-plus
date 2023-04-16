@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from CW_attack import CarliniL2
+from model import Model
 import util
 
 
@@ -303,8 +304,10 @@ if __name__ == '__main__':
     logger = util.init_logger(args.output_dir)
 
     device = torch.device("cuda:0")
-    tokenizer = LlamaTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    model = LlamaForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
+    model = Model(args.task, args.model, args.cache_dir, device)
+    tokenizer = model.tokenizer
+    # tokenizer = LlamaTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
+    # model = LlamaForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
     model.to(device)
     model.eval()
 
