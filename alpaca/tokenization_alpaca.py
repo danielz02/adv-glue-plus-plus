@@ -78,9 +78,11 @@ def get_preprocess_function(task_name: int, tokenizer: PreTrainedTokenizer,):
 
 class AlpacaZeroShotTokenizer(LlamaTokenizer):
     """
-        Should be a more elegant implementation. Save for later.
+        TODO: Writing a new tokenizer should be a more elegant implementation.
         1. Add special tokens for instruction, input, label
-        2. Implement create_token_type_ids_from_sequences like BERTTokenizer to create mask for different segment
+        2. Implement prepare_for_tokenization
+        3. Implement prepare_for_model to assemble ids, pair_ids, and handle truncation and padding
+        4. Implement create_token_type_ids_from_sequences like BERTTokenizer to create mask for different segment
     """
 
     def __init__(self, vocab_file, **kwargs):
