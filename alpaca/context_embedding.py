@@ -125,14 +125,14 @@ def get_embeddings(word, sentences, model, tokenizer, device):
         batch_size = tokens_tensor.size(0)
 
         encoded_layers = torch.concat([
-            model(
+            model.model(
                 input_ids=tokens_tensor[:(batch_size // 2)], attention_mask=masks_tensor[:(batch_size // 2)],
-                output_hidden_states=True
-            ).hidden_states[0],
-            model(
+                output_hidden_states=False
+            ).last_hidden_state,
+            model.model(
                 input_ids=tokens_tensor[(batch_size // 2):], attention_mask=masks_tensor[(batch_size // 2):],
-                output_hidden_states=True
-            ).hidden_states[0]
+                output_hidden_states=False
+            ).last_hidden_state
         ], dim=0)
 
     for i, idx in enumerate(word_indices):
