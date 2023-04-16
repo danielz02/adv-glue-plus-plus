@@ -13,8 +13,6 @@ from tqdm import tqdm
 
 from CW_attack import CarliniL2
 import util
-# from transformers import BertTokenizer, BertModel, BertForMaskedLM
-from transformers import LlamaTokenizer, LlamaForCausalLM
 
 
 def transform(seq, unk_words_dict=None):
@@ -181,8 +179,7 @@ def cw_word_attack(data_val):
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
     cw = CarliniL2(debug=False, targeted=True, cuda=True)
     for batch_index, batch in enumerate(tqdm(test_batch)):
-        inputs = tokenizer(batch['sentence'][0], return_tensors="pt", padding='max_length',
-                           max_length=128, truncation=True)
+        inputs = tokenizer(batch['sentence'][0], return_tensors="pt")
         batch_add_start = batch['add_start'] = []
         batch_add_end = batch['add_end'] = []
         batch['seq_len'] = []
