@@ -11,15 +11,6 @@ import numpy as np
 import torch
 
 
-task_to_keys = {
-    "mnli": ("premise", "hypothesis"),
-    "mnli-mm": ("premise", "hypothesis"),
-    "qnli": ("question", "sentence"),
-    "qqp": ("question1", "question2"),
-    "rte": ("sentence1", "sentence2"),
-    "sst2": ("sentence", None),
-}
-
 class Dictionary(object):
     def __init__(self, path=''):
         self.word2idx = dict()
@@ -43,7 +34,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', type=int, default=42,
                         help='random seed')
-    parser.add_argument('--cache_dir', type=str, default='/scratch/bbkc/danielz/.cache/',
+    parser.add_argument('--cache_dir', type=str, default='./.cache/',
                         help='from_pretrained cache dir')
     parser.add_argument('--task', type=str, default='sst2',
                         choices=['cola', 'sst2', 'mrpc', 'stsb', 'qqp', 'mnli', 'mnli-mm', 'qnli', 'rte', 'wnli'],
@@ -57,9 +48,9 @@ def get_args():
                         type=str,
                         default='adv_results/dataset',
                         help="pre-processed dataset")
-    parser.add_argument('--embedding-space', type=str, default='../synonym_data/s.pt',
+    parser.add_argument('--embedding-space', type=str, default='./static/s.npy',
                         help='location of the embedding data, should be a json file')
-    parser.add_argument('--word-list', type=str, default='../synonym_data/word_list.pkl',
+    parser.add_argument('--word-list', type=str, default='./static/word_list.npy',
                         help='location of the word list data, should be a json file')
     parser.add_argument('--const', type=float, default=1e4,
                         help='initial const for cw attack')
@@ -88,7 +79,7 @@ def make_sure_path_exists(path):
 
 def init_logger(root_dir):
     if not os.path.exists(root_dir):
-        os.mkdir('./'+root_dir)
+        os.mkdir('./' + root_dir)
     log_formatter = logging.Formatter("%(message)s")
     logger = logging.getLogger()
     file_handler = logging.FileHandler("{0}/info.log".format(root_dir), mode='a')
