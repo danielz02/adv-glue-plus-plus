@@ -1,19 +1,15 @@
-import json
-import random
-import codecs
-import joblib
 import os
-import numpy as np
-import torch
-from datasets import load_dataset
-import copy
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
-from tqdm import tqdm
-
-from CW_attack import CarliniL2
-from model import Model
 import util
+import copy
+import torch
+import joblib
+import numpy as np
+from tqdm import tqdm
+from CW_attack import CarliniL2
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer
+from model import ZeroShotLlamaForSemAttack
 
 
 def transform(seq, unk_words_dict=None):
@@ -178,9 +174,9 @@ def cw_word_attack(data_val):
     preds = []
 
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
-    cw = CarliniL2(debug=False, targeted=True, cuda=True)
+    cw = CarliniL2(args, logger, debug=False, targeted=True, cuda=True)
     for batch_index, batch in enumerate(tqdm(test_batch)):
-        inputs = tokenizer(batch['sentence'][0], return_tensors="pt")
+        inputs = tokenizer(batch['sentence'][0], return_tensors="pt", add_special_tokens=False)
         batch_add_start = batch['add_start'] = []
         batch_add_end = batch['add_end'] = []
         batch['seq_len'] = []
@@ -208,7 +204,7 @@ def cw_word_attack(data_val):
             continue
 
         # prepare attack
-        input_embedding = model.model.bert.embeddings.word_embeddings(inputs['input_ids'])
+        input_embedding = model.get_input_embedding_vector(inputs['input_ids'])
         cw_mask = np.zeros(input_embedding.shape).astype(np.float32)
         cw_mask = torch.from_numpy(cw_mask).float().to(device)
         for i, sentence in enumerate(batch['sentence']):
@@ -304,10 +300,10 @@ if __name__ == '__main__':
     logger = util.init_logger(args.output_dir)
 
     device = torch.device("cuda:0")
-    model = Model(args.task, args.model, args.cache_dir, device)
-    tokenizer = model.tokenizer
-    # tokenizer = LlamaTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    # model = LlamaForCausalLM.from_pretrained(args.model, cache_dir=args.cache_dir)
+
+    # FIXME: Hard code for now
+    model = ZeroShotLlamaForSemAttack(args.model, args.cache_dir).to(device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     model.to(device)
     model.eval()
 

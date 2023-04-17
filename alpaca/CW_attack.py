@@ -4,12 +4,12 @@ import copy
 import numpy as np
 from torch import optim
 
-from util import args, logger
-
+from alpaca.model import ZeroShotLlamaForSemAttack
+from util import get_args
 
 class CarliniL2:
 
-    def __init__(self, targeted=True, search_steps=None, max_steps=None, cuda=False, debug=False, num_classes=3):
+    def __init__(self, args, logger, targeted=True, search_steps=None, max_steps=None, cuda=False, debug=False, num_classes=3):
         logger.info(("const confidence lr:", args.const, args.confidence, args.lr))
         self.debug = debug
         self.targeted = targeted
@@ -69,7 +69,7 @@ class CarliniL2:
         loss = loss1 + loss2
         return loss
 
-    def _optimize(self, optimizer, model, input_var, modifier_var, target_var, scale_const_var, input_token=None):
+    def _optimize(self, optimizer, model: ZeroShotLlamaForSemAttack, input_var, modifier_var, target_var, scale_const_var, input_token=None):
         # apply modifier and clamp resulting image to keep bounded from clip_min to clip_max
 
         batch_adv_sent = []
@@ -77,9 +77,9 @@ class CarliniL2:
             # not word-level attack
             input_adv = modifier_var + input_var
             output = model(input_adv)
-            input_adv = model.get_embedding()
+            input_adv = model.get_embedding()  # FIXME: What is get_embedding()?
             input_var = input_token
-            seqback = model.get_seqback()
+            seqback = model.get_seqback()  # FIXME: What is get_seqback()?
             batch_adv_sent = seqback.adv_sent.copy()
             seqback.adv_sent = []
             # input_adv = self.itereated_var = modifier_var + self.itereated_var
@@ -96,7 +96,9 @@ class CarliniL2:
                     # print(self.wv[self.seq[0][j].item()])
                     # if self.seq[0][j].item() not in self.wv.keys():
 
-                    similar_wv = model.model.bert.embeddings.word_embeddings(torch.LongTensor(self.wv[self.seq[i][j].item()]).cuda())
+                    similar_wv = model.get_input_embedding_vector(
+                        torch.tensor(self.wv[self.seq[i][j].item()], dtype=torch.long).cuda()
+                    )
                     new_placeholder = input_adv[i, j].data
                     temp_place = new_placeholder.expand_as(similar_wv)
                     new_dist = torch.norm(temp_place - similar_wv.data, 2, -1)  # 2范数距离，一个字一个float
@@ -106,7 +108,7 @@ class CarliniL2:
                     input_adv.data[i, j] = self.itereated_var.data[i, j] = similar_wv[new_word.item()].data
                     del temp_place
                 batch_adv_sent.append(new_word_list)
-            output = model(**self.input_dict, inputs_embeds=input_adv).logits
+            output = model(input_dict=self.input_dict, perturbed=input_adv).logits
 
         def reduce_sum(x, keepdim=True):
             # silly PyTorch, when will you get proper reducing sums/means?
