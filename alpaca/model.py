@@ -89,17 +89,20 @@ class LlamaForZeroShotSequenceClassification(LlamaForCausalLM):
         )
 
 
-class LlamaForSemAttackAdvGeneration(nn.Module):
+class ZeroShotLlamaForSemAttack(nn.Module):
     def __init__(self, model_name, cache_dir):
         super().__init__()
         self.llama_classifier = LlamaForZeroShotSequenceClassification.from_pretrained(model_name, cache_dir=cache_dir)
+
+    def get_input_embedding_vector(self, input_ids: torch.LongTensor):
+        return self.llama_classifier.get_input_embeddings()(input_ids)
 
     def forward(
         self, src: Dict[str, Union[torch.Tensor, List]], gold=None, perturbed=None, **kwargs
     ) -> Dict[str, Any]:
         # Assuming single input for now...
         instruction_token_embedding = self.llama_classifier.get_input_embeddings()(src["instruction_token_ids"])
-        if perturbed:
+        if perturbed is not None:
             input_token_embedding = perturbed
         else:
             input_token_embedding = self.llama_classifier.get_input_embeddings()(src["input_token_ids"])
@@ -150,22 +153,23 @@ class LlamaForSemAttackAdvGeneration(nn.Module):
 
 
 def test():
+    from tqdm import tqdm
+    from datasets import load_dataset
+
     device = torch.device("cuda:0")
 
-    from datasets import load_dataset
     test_data = load_dataset("glue", "sst2", cache_dir="./.cache/", split="validation")
     test_data = test_data.load_from_disk(f"./.cache/sst2/")
     test_data.set_format("pt", output_all_columns=True)
 
-    model = LlamaForSemAttackAdvGeneration("chavinlo/alpaca-native", cache_dir="./.cache/")
+    model = ZeroShotLlamaForSemAttack("chavinlo/alpaca-native", cache_dir="./.cache/")
     model.to(device)
     model.eval()
 
     sst2_dev_predictions = []
-    from tqdm import tqdm
     for data in tqdm(test_data):
         data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
-        pred = model(data)
+        pred = model(data, perturbed=torch.randn(50, 4096, device=device))
         print(pred["pred"].reshape(-1).argmax().item())
         sst2_dev_predictions.append(pred["pred"].reshape(-1).argmax().item())
 
