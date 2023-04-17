@@ -1,7 +1,9 @@
+import os.path
 from copy import deepcopy
 from typing import List, Union, Optional, Dict
 
 import torch
+from datasets import load_dataset
 from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer
 from transformers.tokenization_utils_base import TextInput, TruncationStrategy, BatchEncoding
 from transformers.utils import PaddingStrategy
@@ -17,7 +19,7 @@ ALPACA_LABEL_CANDIDATE = {
 
 ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired with an input that provides further " \
                          "context. Write a response that appropriately completes the request.\n\n" \
-                         "### Instruction:\n{instruction}\n\n### Input:\n<i>{input}</i>\n\n### Response:<l>{label}"
+                         "### Instruction:\n{instruction}\n\n### Input:\n<i>{input}</i>\n\n### Response:<l>{label} </s>"
 
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
@@ -34,7 +36,7 @@ GLUE_TASK_TO_KEYS = {
 IGNORE_INDEX = -100
 
 
-def get_preprocess_function(task_name: int, tokenizer: PreTrainedTokenizer,):
+def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer,):
     assert task_name in ALPACA_LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
@@ -49,7 +51,7 @@ def get_preprocess_function(task_name: int, tokenizer: PreTrainedTokenizer,):
                 message = f"{message}\n{sentence2_key}: {sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = ALPACA_PROMPT_TEMPLATE.format(
-                instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label} </s>"
+                instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
             )
             tokens = tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
@@ -59,17 +61,22 @@ def get_preprocess_function(task_name: int, tokenizer: PreTrainedTokenizer,):
             label_start_idx = tokens.index("<l>")
             tokens.remove("<l>")
             token_ids = torch.tensor(tokenizer.convert_tokens_to_ids(tokens), dtype=torch.long)
-            label_token_ids = token_ids.clone()
-            label_token_ids[:label_start_idx] = IGNORE_INDEX
 
-            token_type_ids = torch.zeros_like(token_ids)
-            token_type_ids[input_start_idx:input_end_idx] = 1
-            token_type_ids[input_end_idx:label_start_idx] = 0
-            token_type_ids[label_start_idx:-1] = 2
+            instruction_token_ids = token_ids[:input_start_idx].clone()
+            input_token_ids = token_ids[input_start_idx:input_end_idx].clone()
+            response_header_token_ids = token_ids[input_end_idx:label_start_idx].clone()
+            response_token_ids = token_ids[label_start_idx:].clone()
 
-            example[f"{label}_input_ids"] = token_ids
-            example[f"{label}_input_ids_type"] = token_type_ids
-            example[f"{label}_label_input_ids"] = label_token_ids
+            # token_type_ids = torch.zeros_like(token_ids)
+            # token_type_ids[input_start_idx:input_end_idx] = 1
+            # token_type_ids[input_end_idx:label_start_idx] = 0
+            # token_type_ids[label_start_idx:-1] = 2
+
+            example[f"instruction_token_ids"] = instruction_token_ids
+            example[f"input_token_ids"] = input_token_ids
+            example[f"response_header_token_ids"] = response_header_token_ids
+            example[f"{label}_response_token_ids"] = response_token_ids
+            example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
 
         return example
 
@@ -215,3 +222,14 @@ class AlpacaZeroShotTokenizer(LlamaTokenizer):
         )
 
         return batch_outputs
+
+
+if __name__ == "__main__":
+    tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    test_data = load_dataset("glue", "sst2", cache_dir="./.cache/", split="validation")
+    if os.path.exists("./.cache/sst2/"):
+        test_data = test_data.load_from_disk(f"./.cache/sst2/")
+    else:
+        test_data = test_data.map(get_preprocess_function("sst2", tokenizer), num_proc=16).save_to_disk(f"./.cache/sst2/")
+
+    print(test_data[0])
