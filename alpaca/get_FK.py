@@ -4,7 +4,9 @@ import torch
 import joblib
 from collections import Counter
 from datasets import load_dataset
-from util import args, task_to_keys
+
+from tokenization_alpaca import GLUE_TASK_TO_KEYS
+from util import get_args
 from nltk.corpus import wordnet as wn
 from transformers import AutoTokenizer
 
@@ -36,7 +38,7 @@ def get_knowledge(word):
 def get_knowledge_dict(data):
     knowledge_dict = {}
 
-    for key in task_to_keys[args.test_data]:
+    for key in GLUE_TASK_TO_KEYS[args.test_data]:
         if not key:
             continue
         if "seq" not in data:  # TODO: Deal with multiple keys
@@ -60,6 +62,7 @@ def get_knowledge_dict(data):
 
 
 if __name__ == '__main__':
+    args = get_args()
     tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
     word_list = joblib.load(args.word_list)
 
