@@ -98,24 +98,24 @@ class ZeroShotLlamaForSemAttack(nn.Module):
         return self.llama_classifier.get_input_embeddings()(input_ids)
 
     def forward(
-        self, src: Dict[str, Union[torch.Tensor, List]], gold=None, perturbed=None, **kwargs
+        self, input_dict: Dict[str, Union[torch.Tensor, List]], gold=None, perturbed=None, **kwargs
     ) -> Dict[str, Any]:
         # Assuming single input for now...
-        instruction_token_embedding = self.llama_classifier.get_input_embeddings()(src["instruction_token_ids"])
+        instruction_token_embedding = self.llama_classifier.get_input_embeddings()(input_dict["instruction_token_ids"])
         if perturbed is not None:
             input_token_embedding = perturbed
         else:
-            input_token_embedding = self.llama_classifier.get_input_embeddings()(src["input_token_ids"])
+            input_token_embedding = self.llama_classifier.get_input_embeddings()(input_dict["input_token_ids"])
         response_header_token_embedding = self.llama_classifier.get_input_embeddings()(
-            src["response_header_token_ids"]
+            input_dict["response_header_token_ids"]
         )
         inputs_embeds = torch.stack([
             torch.cat([
                 instruction_token_embedding,
                 input_token_embedding,
                 response_header_token_embedding,
-                self.llama_classifier.get_input_embeddings()(src[f"{label}_response_token_ids"])
-            ]) for label in src["label_names"]
+                self.llama_classifier.get_input_embeddings()(input_dict[f"{label}_response_token_ids"])
+            ]) for label in input_dict["label_names"]
         ])  # (num_labels, seq_len, 4096)
 
         label_input_ids = torch.stack([
@@ -132,8 +132,8 @@ class ZeroShotLlamaForSemAttack(nn.Module):
                     response_header_token_embedding.size(0), dtype=torch.long,
                     device=instruction_token_embedding.device
                 ) * -100,
-                src[f"{label}_response_token_ids"]
-            ]) for label in src["label_names"]
+                input_dict[f"{label}_response_token_ids"]
+            ]) for label in input_dict["label_names"]
         ])  # (num_labels, seq_len,)
 
         classifier_args = {
