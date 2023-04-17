@@ -5,7 +5,7 @@ from typing import List, Union, Optional, Dict
 import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer
-from transformers.tokenization_utils_base import TextInput, TruncationStrategy, BatchEncoding
+from transformers.tokenization_utils_base import TruncationStrategy, BatchEncoding
 from transformers.utils import PaddingStrategy
 
 ALPACA_TASK_DESCRIPTION = {
@@ -230,6 +230,6 @@ if __name__ == "__main__":
     if os.path.exists("./.cache/sst2/"):
         test_data = test_data.load_from_disk(f"./.cache/sst2/")
     else:
-        test_data = test_data.map(get_preprocess_function("sst2", tokenizer), num_proc=16).save_to_disk(f"./.cache/sst2/")
+        test_data.map(get_preprocess_function("sst2", tokenizer), num_proc=16).save_to_disk(f"./.cache/sst2/")
 
     print(test_data[0])
