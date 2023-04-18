@@ -3,14 +3,18 @@ import torch
 import copy
 import numpy as np
 from torch import optim
+from tqdm import tqdm
 
-from alpaca.model import ZeroShotLlamaForSemAttack
+from model import ZeroShotLlamaForSemAttack
 from util import get_args
+
 
 class CarliniL2:
 
-    def __init__(self, args, logger, targeted=True, search_steps=None, max_steps=None, cuda=False, debug=False, num_classes=3):
+    def __init__(self, args, logger, targeted=True, search_steps=None, max_steps=None, device=None, debug=False,
+                 num_classes=3):
         logger.info(("const confidence lr:", args.const, args.confidence, args.lr))
+        self.args = args
         self.debug = debug
         self.targeted = targeted
         self.num_classes = num_classes
@@ -20,13 +24,15 @@ class CarliniL2:
         self.repeat = self.binary_search_steps >= 10
         self.max_steps = max_steps or args.max_steps
         self.abort_early = True
-        self.cuda = cuda
+        self.device = device if device is not None else torch.device("cpu")
         self.mask = None
         self.batch_info = None
         self.wv = None
         self.input_dict = None
         self.seq = None
         self.init_rand = False  # an experiment, does a random starting point help?
+        self.best_sent = None
+        self.o_best_sent = None
 
     def _compare(self, output, target):
         if not isinstance(output, (float, int, np.int64)):
@@ -69,14 +75,15 @@ class CarliniL2:
         loss = loss1 + loss2
         return loss
 
-    def _optimize(self, optimizer, model: ZeroShotLlamaForSemAttack, input_var, modifier_var, target_var, scale_const_var, input_token=None):
+    def _optimize(self, optimizer, model: ZeroShotLlamaForSemAttack, input_var, modifier_var, target_var,
+                  scale_const_var, input_token=None):
         # apply modifier and clamp resulting image to keep bounded from clip_min to clip_max
 
         batch_adv_sent = []
         if self.mask is None:
             # not word-level attack
             input_adv = modifier_var + input_var
-            output = model(input_adv)
+            output = model(self.input_dict, perturbed=input_adv)
             input_adv = model.get_embedding()  # FIXME: What is get_embedding()?
             input_var = input_token
             seqback = model.get_seqback()  # FIXME: What is get_seqback()?
@@ -87,28 +94,26 @@ class CarliniL2:
             # word level attack
             input_adv = modifier_var * self.mask + self.itereated_var
             # input_adv = modifier_var * self.mask + input_var
-            for i in range(input_adv.size(0)):
-                # for batch size
-                new_word_list = []
-                add_start = self.batch_info['add_start'][i]
-                add_end = self.batch_info['add_end'][i]
-                for j in range(add_start, add_end):
-                    # print(self.wv[self.seq[0][j].item()])
-                    # if self.seq[0][j].item() not in self.wv.keys():
+            new_word_list = []
+            add_start = self.batch_info['add_start'][0]
+            add_end = self.batch_info['add_end'][0]
+            for j in range(add_start, add_end):
+                # print(self.wv[self.seq[0][j].item()])
+                # if self.seq[0][j].item() not in self.wv.keys():
 
-                    similar_wv = model.get_input_embedding_vector(
-                        torch.tensor(self.wv[self.seq[i][j].item()], dtype=torch.long).cuda()
-                    )
-                    new_placeholder = input_adv[i, j].data
-                    temp_place = new_placeholder.expand_as(similar_wv)
-                    new_dist = torch.norm(temp_place - similar_wv.data, 2, -1)  # 2范数距离，一个字一个float
-                    _, new_word = torch.min(new_dist, 0)
-                    new_word_list.append(new_word.item())
-                    # input_adv.data[j, i] = self.wv[new_word.item()].data
-                    input_adv.data[i, j] = self.itereated_var.data[i, j] = similar_wv[new_word.item()].data
-                    del temp_place
-                batch_adv_sent.append(new_word_list)
-            output = model(input_dict=self.input_dict, perturbed=input_adv).logits
+                similar_wv = model.get_input_embedding_vector(
+                    torch.tensor(self.wv[self.seq[j].item()], dtype=torch.long).to(self.device)
+                )
+                new_placeholder = input_adv[j].data
+                temp_place = new_placeholder.expand_as(similar_wv)
+                new_dist = torch.norm(temp_place - similar_wv.data, 2, -1)  # 2范数距离，一个字一个float
+                _, new_word = torch.min(new_dist, 0)
+                new_word_list.append(new_word.item())
+                # input_adv.data[j, i] = self.wv[new_word.item()].data
+                input_adv.data[j] = self.itereated_var.data[j] = similar_wv[new_word.item()].data
+                del temp_place
+            batch_adv_sent.append(new_word_list)
+            output = model(input_dict=self.input_dict, perturbed=input_adv)["logits"]
 
         def reduce_sum(x, keepdim=True):
             # silly PyTorch, when will you get proper reducing sums/means?
@@ -124,92 +129,93 @@ class CarliniL2:
             d = (x - y) ** 2
             return reduce_sum(d, keepdim=keepdim)
 
-        # distance to the original input data
-        if args.l1:
-            dist = l1_dist(input_adv, input_var, keepdim=False)
+        # distance to the original input_embedding data
+        if self.args.l1:
+            dist = l1_dist(input_adv.unsqueeze(0), input_var.unsqueeze(0), keepdim=False)
         else:
-            dist = l2_dist(input_adv, input_var, keepdim=False)
+            # Add batch dimension
+            dist = l2_dist(input_adv.unsqueeze(0), input_var.unsqueeze(0), keepdim=False)
         loss = self._loss(output, target_var, dist, scale_const_var)
         optimizer.zero_grad()
         if input_token is None:
             loss.backward()
         else:
             loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_([modifier_var], args.clip)
+        torch.nn.utils.clip_grad_norm_([modifier_var], self.args.clip)
         optimizer.step()
         # modifier_var.data -= 2 * modifier_var.grad.data
         # modifier_var.grad.data.zero_()
 
         loss_np = loss.item()
-        dist_np = dist.data.cpu().numpy()
+        dist_np = dist.detach().cpu().numpy()
         output_np = output.data.cpu().numpy()
         input_adv_np = input_adv.data.cpu().numpy()
         return loss_np, dist_np, output_np, input_adv_np, batch_adv_sent
 
-    def run(self, model, input, target, input_dict, batch_idx=0, batch_size=None, input_token=None):
+    def run(self, model, input_embedding, target, input_dict, batch_idx=0, batch_size=None, input_token=None):
         self.input_dict = copy.deepcopy(input_dict)
         self.input_dict['input_ids'] = None
-        if batch_size is None:
-            batch_size = input.size(0)  # ([length, batch_size, nhim])
         # set the lower and upper bounds accordingly
-        lower_bound = np.zeros(batch_size)
-        scale_const = np.ones(batch_size) * self.initial_const
-        upper_bound = np.ones(batch_size) * 1e10
+        lower_bound = 0
+        scale_const = self.initial_const
+        upper_bound = 1e10
 
         # python/numpy placeholders for the overall best l2, label score, and adversarial image
-        o_best_l2 = [1e10] * batch_size
-        o_best_score = [-1] * batch_size
-        o_best_logits = {}
+        o_best_l2 = 1e10
+        o_best_score = -1
+        o_best_logits = None
         if input_token is None:
-            best_attack = input.cpu().detach().numpy()
-            o_best_attack = input.cpu().detach().numpy()
+            best_attack = input_embedding.cpu().detach().numpy()
+            o_best_attack = input_embedding.cpu().detach().numpy()
         else:
             best_attack = input_token.cpu().detach().numpy()
             o_best_attack = input_token.cpu().detach().numpy()
         self.o_best_sent = {}
         self.best_sent = {}
 
-        # setup input (image) variable, clamp/scale as necessary
-        input_var = torch.tensor(input, requires_grad=False)
-        self.itereated_var = torch.tensor(input_var)
+        # TODO: Double check copy construction
+        # setup input_embedding (image) variable, clamp/scale as necessary
+        input_var = input_embedding.clone().detach().requires_grad_(False)
+        self.itereated_var = input_var.clone()
         # setup the target variable, we need it to be in one-hot form for the loss function
         target_onehot = torch.zeros(target.size() + (self.num_classes,))
-        if self.cuda:
-            target_onehot = target_onehot.cuda()
+        if self.device:
+            target_onehot = target_onehot.to(self.device)
+
         target_onehot.scatter_(1, target.unsqueeze(1), 1.)
-        target_var = torch.tensor(target_onehot, requires_grad=False)
+        target_var = target_onehot.clone().detach().requires_grad_(False)
 
         # setup the modifier variable, this is the variable we are optimizing over
-        modifier = torch.zeros(input_var.size()).float()
-        if self.cuda:
-            modifier = modifier.cuda()
-        modifier_var = torch.tensor(modifier, requires_grad=True)
+        modifier = torch.zeros_like(input_var).float()
+        if self.device:
+            modifier = modifier.to(self.device)
+        modifier_var = modifier.clone().detach().requires_grad_(True)
 
-        optimizer = optim.Adam([modifier_var], lr=args.lr)
+        optimizer = optim.Adam([modifier_var], lr=self.args.lr)
 
         for search_step in range(self.binary_search_steps):
-            best_l2 = [1e10] * batch_size
-            best_score = [-1] * batch_size
+            best_l2 = 1e10
+            best_score = -1
             best_logits = {}
             # The last iteration (if we run many steps) repeat the search once.
             if self.repeat and search_step == self.binary_search_steps - 1:
                 scale_const = upper_bound
 
-            scale_const_tensor = torch.from_numpy(scale_const).float()
-            if self.cuda:
-                scale_const_tensor = scale_const_tensor.cuda()
-            scale_const_var = torch.tensor(scale_const_tensor, requires_grad=False)
+            scale_const_tensor = torch.tensor([scale_const]).float()
+            if self.device:
+                scale_const_tensor = scale_const_tensor.to(self.device)
+            scale_const_var = scale_const_tensor.clone().detach().requires_grad_(False)
 
-            for step in range(self.max_steps):
+            for step in tqdm(range(self.max_steps)):
                 # perform the attack
                 if self.mask is None:
-                    if args.decreasing_temp:
-                        cur_temp = args.temp - (args.temp - 0.1) / (self.max_steps - 1) * step
+                    if self.args.decreasing_temp:
+                        cur_temp = self.args.temp - (self.args.temp - 0.1) / (self.max_steps - 1) * step
                         model.set_temp(cur_temp)
-                        if args.debug_cw:
+                        if self.args.debug_cw:
                             print("temp:", cur_temp)
                     else:
-                        model.set_temp(args.temp)
+                        model.set_temp(self.args.temp)
                 # output 是攻击后的model的test输出  adv_img是输出的词向量矩阵， adv_sents是字的下标组成的list
                 loss, dist, output, adv_img, adv_sents = self._optimize(
                     optimizer,
@@ -218,54 +224,54 @@ class CarliniL2:
                     modifier_var,
                     target_var,
                     scale_const_var,
-                    input_token)
+                    input_token
+                )
 
-                for i in range(batch_size):
-                    target_label = target[i]
-                    output_logits = output[i]
-                    output_label = np.argmax(output_logits)
-                    di = dist[i]
+                target_label = target
+                output_logits = output
+                output_label = np.argmax(output_logits)
+                di = dist
+                if self.debug:
+                    if step % 100 == 0:
+                        print(
+                            'dist: {0:.5f}, output: {1:>3}, {2:5.3}, target {3:>3}'
+                            .format(di, output_label, output_logits[output_label], target_label)
+                        )
+                if di < best_l2 and self._compare_untargeted(output_logits, target_label):
                     if self.debug:
-                        if step % 100 == 0:
-                            print('{0:>2} dist: {1:.5f}, output: {2:>3}, {3:5.3}, target {4:>3}'.format(
-                                i, di, output_label, output_logits[output_label], target_label))
-                    if di < best_l2[i] and self._compare_untargeted(output_logits, target_label):
-                        # if self._compare(output_logits, target_label):
-                        if self.debug:
-                            print('{0:>2} best step,  prev dist: {1:.5f}, new dist: {2:.5f}'.format(
-                                i, best_l2[i], di))
-                        best_l2[i] = di
-                        best_score[i] = output_label
-                        best_logits[i] = output_logits
-                        best_attack[i] = adv_img[i]
-                        self.best_sent[i] = adv_sents[i]
-                    if di < o_best_l2[i] and self._compare(output_logits, target_label):
-                        # if self._compare(output_logits, target_label):
-                        if self.debug:
-                            print('{0:>2} best total, prev dist: {1:.5f}, new dist: {2:.5f}'.format(
-                                i, o_best_l2[i], di))
-                        o_best_l2[i] = di
-                        o_best_score[i] = output_label
-                        o_best_logits[i] = output_logits
-                        o_best_attack[i] = adv_img[i]
-                        self.o_best_sent[i] = adv_sents[i]
+                        print('best step,  prev dist: {0:.5f}, new dist: {1:.5f}'.format(best_l2, di))
+                    best_l2 = di
+                    best_score = output_label
+                    best_logits = output_logits
+                    best_attack = adv_img
+                    self.best_sent = adv_sents
+                if di < o_best_l2 and self._compare(output_logits, target_label):
+                    if self.debug:
+                        print('best total, prev dist: {0:.5f}, new dist: {1:.5f}'.format(o_best_l2, di))
+                    o_best_l2 = di
+                    o_best_score = output_label
+                    o_best_logits = output_logits
+                    o_best_attack = adv_img
+                    self.o_best_sent = adv_sents
+
                 sys.stdout.flush()
                 # end inner step loop
 
             # adjust the constants
             batch_failure = 0
             batch_success = 0
-            for i in range(batch_size):
-                if self._compare(o_best_score[i], target[i]) and o_best_score[i] != -1:
-                    batch_success += 1
-                elif self._compare_untargeted(best_score[i], target[i]) and best_score[i] != -1:
-                    o_best_l2[i] = best_l2[i]
-                    o_best_score[i] = best_score[i]
-                    o_best_attack[i] = best_attack[i]
-                    self.o_best_sent[i] = self.best_sent[i]
-                    batch_success += 1
-                else:
-                    batch_failure += 1
+
+            if self._compare(o_best_score, target) and o_best_score != -1:
+                batch_success += 1
+            elif self._compare_untargeted(best_score, target) and best_score != -1:
+                o_best_l2 = best_l2
+                o_best_score = best_score
+                o_best_attack = best_attack
+                self.o_best_sent = self.best_sent
+                batch_success += 1
+            else:
+                batch_failure += 1
+
             # print('Num failures: {0:2d}, num successes: {1:2d}\n'.format(batch_failure, batch_success))
             sys.stdout.flush()
             # end outer search loop

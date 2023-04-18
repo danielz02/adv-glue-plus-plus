@@ -1,3 +1,4 @@
+import json
 import os
 import util
 import copy
@@ -174,18 +175,24 @@ def cw_word_attack(data_val):
     preds = []
 
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
-    cw = CarliniL2(args, logger, debug=False, targeted=True, cuda=True)
+    # TODO: Fix hard coded num_classes
+    cw = CarliniL2(args, logger, debug=False, targeted=True, device=device, num_classes=2)
     for batch_index, batch in enumerate(tqdm(test_batch)):
-        inputs = tokenizer(batch['sentence'][0], return_tensors="pt", add_special_tokens=False)
+        print(batch)
+        inputs = batch
         batch_add_start = batch['add_start'] = []
         batch_add_end = batch['add_end'] = []
         batch['seq_len'] = []
         for i, sentence in enumerate(batch['sentence']):
-            batch['add_start'].append(1)
-            batch['add_end'].append(inputs['input_ids'][i].cpu().numpy().tolist().index(util.eos_id) - 1)
+            batch['add_start'].append(0)
+            batch['add_end'].append(len(inputs['input_token_ids'][i]))
             batch['seq_len'].append(batch['add_end'][i])
+            print(inputs['input_token_ids'][i][batch['add_start'][i]:batch['add_end'][i]])
         tot += len(batch['label'])
-        inputs = {k: v.to(device) for (k, v) in inputs.items()}
+
+        # FIXME: Handle batches later
+        inputs = {k: v[0].to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        inputs["label_names"] = [x[0] for x in inputs["label_names"]]
 
         if batch['label'][0] == 1:
             attack_targets = torch.full_like(batch['label'], 0)
@@ -195,7 +202,7 @@ def cw_word_attack(data_val):
         attack_targets = attack_targets.to(device)
 
         # test original acc
-        out = model(**inputs).logits
+        out = model(inputs)["logits"]
         prediction = torch.max(out, 1)[1]
         ori_prediction = prediction
         batch['orig_correct'] = torch.sum((prediction == label).float())
@@ -204,15 +211,16 @@ def cw_word_attack(data_val):
             continue
 
         # prepare attack
-        input_embedding = model.get_input_embedding_vector(inputs['input_ids'])
+        input_embedding = model.get_input_embedding_vector(inputs['input_token_ids'])
         cw_mask = np.zeros(input_embedding.shape).astype(np.float32)
         cw_mask = torch.from_numpy(cw_mask).float().to(device)
         for i, sentence in enumerate(batch['sentence']):
             cw_mask[i][batch['add_start'][i]:batch['add_end'][i]] = 1
 
-        cluster_char_dict = get_cluster_dict(batch['cluster_dict'], inputs['input_ids'])
-        typo_dict, unk_words_dict = get_typo_dict(batch['typo_dict'], inputs['input_ids'])
-        knowledge_dict = get_knowledge_dict(batch['knowledge_dict'], inputs['input_ids'])
+        # FIXME: Batched processing
+        cluster_char_dict = get_cluster_dict(json.loads(batch['similar_dict'][0]), inputs['input_token_ids'])
+        typo_dict, unk_words_dict = get_typo_dict(json.loads(batch['bug_dict'][0]), inputs['input_token_ids'])
+        knowledge_dict = get_knowledge_dict(json.loads(batch['knowledge_dict'][0]), inputs['input_token_ids'])
 
         for k, v in cluster_char_dict.items():
             synset = list(set(v + knowledge_dict[k]))
@@ -224,63 +232,59 @@ def cw_word_attack(data_val):
 
         cw.wv = knowledge_dict
         cw.mask = cw_mask
-        cw.seq = inputs['input_ids']
+        cw.seq = inputs['input_token_ids']
         cw.batch_info = batch
-        cw.num_classes = len(model.model.config.label2id)
 
         # attack
         adv_data = cw.run(model, input_embedding, attack_targets, inputs)
         # retest
-        adv_seq = torch.tensor(inputs['input_ids']).to(device)
+        adv_seq = inputs['input_token_ids'].clone().detach().to(device)
         for bi, (add_start, add_end) in enumerate(zip(batch_add_start, batch_add_end)):
             if bi in cw.o_best_sent:
                 for i in range(add_start, add_end):
                     adv_seq.data[bi, i] = knowledge_dict[adv_seq.data[bi, i].item()][cw.o_best_sent[bi][i - add_start]]
         adv_inputs = copy.deepcopy(inputs)
-        adv_inputs['input_ids'] = adv_seq
+        adv_inputs['input_token_ids'] = adv_seq
 
-        out = model(**adv_inputs).logits
+        out = model(input_dict=adv_inputs)["logits"]
         prediction = torch.max(out, 1)[1]
         orig_correct += batch['orig_correct'].item()
         adv_correct += torch.sum((prediction == label).float()).item()
 
-        for i in range(len(batch['label'])):
-            diff = difference(adv_seq[i], inputs['input_ids'][i])
-            tot_diff += diff
-            tot_len += batch['seq_len'][i]
-            changed_rate = 1.0 * diff / batch['seq_len'][i]
-            if ori_prediction[i].item() == label[i].item() and prediction[i].item() == attack_targets[i].item():
-                changed_rates.append(changed_rate)
-                nums_changed.append(diff)
-                orig_texts.append(transform(inputs['input_ids'][i]))
-                adv_texts.append(transform(adv_seq[i], unk_words_dict))
-                true_labels.append(label[i].item())
-                new_labels.append(prediction[i].item())
-                text_len.append(batch['seq_len'][i])
-            ori_labels.append(label[i].item())
-            ori_preds.append(ori_prediction[i].item())
-            preds.append(prediction[i].item())
+        diff = difference(adv_seq, inputs['input_token_ids'])
+        tot_diff += diff
+        tot_len += batch['seq_len'][0]  # TODO: Change later
+        changed_rate = 1.0 * diff / batch['seq_len'][0]
+        if ori_prediction.item() == label.item() and prediction.item() == attack_targets.item():
+            changed_rates.append(changed_rate)
+            nums_changed.append(diff)
+            orig_texts.append(transform(inputs['input_token_ids']))
+            adv_texts.append(transform(adv_seq, unk_words_dict))
+            true_labels.append(label.item())
+            new_labels.append(prediction.item())
+            text_len.append(batch['seq_len'])
+        ori_labels.append(label.item())
+        ori_preds.append(ori_prediction.item())
+        preds.append(prediction.item())
+        print(tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(adv_seq.detach().cpu().numpy())))
 
     message = 'For target model {}:\noriginal accuracy: {:.2f}%,\nadv accuracy: {:.2f}%,\n' \
-              'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'.format(args.model,
-                                                                                   (1 - orig_failures / len(test_batch)) * 100,
-                                                                                   (adv_correct / len(test_batch)) * 100,
-                                                                                   len(adv_texts) / (len(test_batch) - orig_failures) * 100,
-                                                                                   np.mean(changed_rates) * 100)
+              'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'
+    message = message.format(
+        args.model, (1 - orig_failures / len(test_batch)) * 100, (adv_correct / len(test_batch)) * 100,
+        len(adv_texts) / (len(test_batch) - orig_failures) * 100, np.mean(changed_rates) * 100
+    )
     logger.info(message)
 
-    joblib.dump({'ori_labels': ori_labels, 'ori_preds': ori_preds, 'preds': preds},
-                os.path.join(args.output_dir, 'labels.pkl'))
+    joblib.dump(
+        {'ori_labels': ori_labels, 'ori_preds': ori_preds, 'preds': preds},
+        os.path.join(args.output_dir, 'labels.pkl')
+    )
 
     results = []
     for i in range(len(changed_rates)):
-        save_dict = {}
-        save_dict['orig_text'] = orig_texts[i]
-        save_dict['orig_y'] = true_labels[i]
-        save_dict['pred_y'] = new_labels[i]
-        save_dict['diff'] = nums_changed[i]
-        save_dict['diff_ratio'] = changed_rates[i]
-        save_dict['seq_len'] = text_len[i]
+        save_dict = {'orig_text': orig_texts[i], 'orig_y': true_labels[i], 'pred_y': new_labels[i],
+                     'diff': nums_changed[i], 'diff_ratio': changed_rates[i], 'seq_len': text_len[i]}
         if isinstance(adv_texts[i], str):
             save_dict['adv_text'] = adv_texts[i]
             results.append(save_dict)
@@ -309,7 +313,8 @@ if __name__ == '__main__':
 
     # Set the random seed manually for reproducibility.
     util.set_seed(args.seed)
-    # TODO: load pre-precessed dataset with candidate perturbation set
     test_data = load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation")
+    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC_FT_FK")
+    test_data.set_format("pt")
 
     cw_word_attack(test_data)
