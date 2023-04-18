@@ -36,14 +36,14 @@ GLUE_TASK_TO_KEYS = {
 IGNORE_INDEX = -100
 
 
-def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer,):
+def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
     assert task_name in ALPACA_LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
     tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>"]})
 
     def preprocess_function(example):
-        for label in ALPACA_LABEL_CANDIDATE[task_name]:
+        for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
             sentence1 = example[sentence1_key]
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
@@ -72,11 +72,17 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer,):
             # token_type_ids[input_end_idx:label_start_idx] = 0
             # token_type_ids[label_start_idx:-1] = 2
 
+            if i == example["label"]:
+                example["input_ids"] = token_ids
             example[f"instruction_token_ids"] = instruction_token_ids
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
             example[f"{label}_response_token_ids"] = response_token_ids
             example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
+
+            example["input_start_idx"] = input_start_idx
+            example["input_end_idx"] = input_end_idx
+            example["label_start_idx"] = label_start_idx
 
         return example
 
@@ -97,25 +103,25 @@ class AlpacaZeroShotTokenizer(LlamaTokenizer):
         super().__init__(vocab_file, **kwargs)
 
     def prepare_for_model(
-        self,
-        ids: List[int],
-        pair_ids: Optional[List[int]] = None,
-        add_special_tokens: bool = True,
-        padding: Union[bool, str, PaddingStrategy] = False,
-        truncation: Union[bool, str, TruncationStrategy] = None,
-        max_length: Optional[int] = None,
-        stride: int = 0,
-        pad_to_multiple_of: Optional[int] = None,
-        return_tensors: Optional[Union[str, TensorType]] = None,
-        return_token_type_ids: Optional[bool] = None,
-        return_attention_mask: Optional[bool] = None,
-        return_overflowing_tokens: bool = False,
-        return_special_tokens_mask: bool = False,
-        return_offsets_mapping: bool = False,
-        return_length: bool = False,
-        verbose: bool = True,
-        prepend_batch_axis: bool = False,
-        **kwargs,
+            self,
+            ids: List[int],
+            pair_ids: Optional[List[int]] = None,
+            add_special_tokens: bool = True,
+            padding: Union[bool, str, PaddingStrategy] = False,
+            truncation: Union[bool, str, TruncationStrategy] = None,
+            max_length: Optional[int] = None,
+            stride: int = 0,
+            pad_to_multiple_of: Optional[int] = None,
+            return_tensors: Optional[Union[str, TensorType]] = None,
+            return_token_type_ids: Optional[bool] = None,
+            return_attention_mask: Optional[bool] = None,
+            return_overflowing_tokens: bool = False,
+            return_special_tokens_mask: bool = False,
+            return_offsets_mapping: bool = False,
+            return_length: bool = False,
+            verbose: bool = True,
+            prepend_batch_axis: bool = False,
+            **kwargs,
     ) -> BatchEncoding:
         """
         Prepares a sequence of input id, or a pair of sequences of inputs ids so that it can be used by the model. It
@@ -227,9 +233,14 @@ class AlpacaZeroShotTokenizer(LlamaTokenizer):
 if __name__ == "__main__":
     tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
     test_data = load_dataset("glue", "sst2", cache_dir="./.cache/", split="validation")
-    if os.path.exists("./.cache/sst2/"):
-        test_data = test_data.load_from_disk(f"./.cache/sst2/")
+    if os.path.exists("./.cache/glue-preprocessed-benign/sst2/"):
+        print("Loading preprocessed results")
+        test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/sst2/")
     else:
-        test_data.map(get_preprocess_function("sst2", tokenizer), num_proc=16).save_to_disk(f"./.cache/sst2/")
+        print("Loading preprocessed results")
+        test_data = test_data.map(
+            get_preprocess_function("sst2", tokenizer), num_proc=16
+        )
+        test_data.save_to_disk(f"./.cache/glue-preprocessed-benign/sst2/")
 
     print(test_data[0])
