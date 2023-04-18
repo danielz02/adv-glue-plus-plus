@@ -1,5 +1,8 @@
 import json
+import os
+
 import nltk
+import numpy as np
 import torch
 import joblib
 from collections import Counter
@@ -13,7 +16,10 @@ from transformers import AutoTokenizer
 
 def get_knowledge(word):
     knowledge = [word]
-    nltk.data.path = "./corpora/wordnet"
+    if not os.path.exists("./corpora/wordnet"):
+        nltk.download("wordnet", download_dir="./corpora/wordnet")
+    else:
+        nltk.data.path = "./corpora/wordnet"
     synset = wn.synsets(word)
     hyposet = []
     hyposet += synset
@@ -38,16 +44,13 @@ def get_knowledge(word):
 def get_knowledge_dict(data):
     knowledge_dict = {}
 
-    for key in GLUE_TASK_TO_KEYS[args.test_data]:
+    for key in GLUE_TASK_TO_KEYS[args.task]:
         if not key:
             continue
-        if "seq" not in data:  # TODO: Deal with multiple keys
-            data["seq"] = tokenizer.encode(data[key])
-            data["seq_len"] = len(data["seq"])
 
-        indexed_tokens = data["seq"]
+        indexed_tokens = data["input_ids"]
         tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-        for i in range(1, len(indexed_tokens)):
+        for i in range(data["input_start_idx"], data["input_end_idx"]):
             if tokenized_words[i] in word_list:
                 words = get_knowledge(tokenized_words[i])
             else:
@@ -63,10 +66,11 @@ def get_knowledge_dict(data):
 
 if __name__ == '__main__':
     args = get_args()
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
-    word_list = joblib.load(args.word_list)
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    word_list = np.load(args.word_list)
 
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
-    test_data = load_dataset("glue", args.test_data, cache_dir="/scratch/bbkc/danielz/.cache/", split="validation")
-    test_data.map(get_knowledge_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.test_data}/FK")
+    test_data = load_dataset("glue", args.task, cache_dir="./.cache/", split="validation")
+    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC_FT")
+    test_data.map(get_knowledge_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.task}/FC_FT_FK")

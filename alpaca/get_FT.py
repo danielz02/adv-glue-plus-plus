@@ -1,12 +1,15 @@
 import json
 import random
 import joblib
+import numpy as np
 import torch
 import string
 
-from util import args, task_to_keys
 from datasets import load_dataset
 from transformers import AutoTokenizer
+
+from tokenization_alpaca import GLUE_TASK_TO_KEYS
+from util import get_args
 
 
 def bug_delete(word):
@@ -100,16 +103,13 @@ def get_bug(word):
 
 def get_bug_dict(data):
     bug_dict = {}
-    for key in task_to_keys[args.test_data]:
+    for key in GLUE_TASK_TO_KEYS[args.task]:
         if not key:
             continue
-        if "seq" not in data:  # TODO: Deal with multiple keys
-            data["seq"] = tokenizer.encode(data[key])
-            data["seq_len"] = len(data["seq"])
 
-        indexed_tokens = data["seq"]
+        indexed_tokens = data["input_ids"]
         tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-        for i in range(1, len(indexed_tokens)):
+        for i in range(data["input_start_idx"], data["input_end_idx"]):
             if tokenized_words[i] in word_list:
                 words = get_bug(tokenized_words[i])
             else:
@@ -124,8 +124,10 @@ def get_bug_dict(data):
 
 
 if __name__ == '__main__':
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="/scratch/bbkc/danielz/.cache/")
-    word_list = joblib.load(args.word_list)
+    args = get_args()
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    word_list = np.load(args.word_list)
     torch.manual_seed(args.seed)
-    test_data = load_dataset("glue", args.test_data, cache_dir="/scratch/bbkc/danielz/.cache/", split="validation")
-    test_data.map(get_bug_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.test_data}/FT")
+    test_data = load_dataset("glue", args.task, cache_dir="./.cache/", split="validation")
+    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC")
+    test_data.map(get_bug_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.task}/FC_FT")

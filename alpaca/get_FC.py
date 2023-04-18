@@ -40,26 +40,23 @@ def filter_words(words, neighbors):
     return words
 
 
-def get_similar_dict(data, rank):
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(rank % torch.cuda.device_count())
+def get_similar_dict(data):
+    # os.environ["CUDA_VISIBLE_DEVICES"] = str(rank % torch.cuda.device_count())
 
     similar_char_dict = {}
 
     for key in GLUE_TASK_TO_KEYS[args.task]:
         if not key:
             continue
-        if "seq" not in data:  # TODO: Deal with multiple keys
-            data["seq"] = tokenizer.encode(data[key])
-            data["seq_len"] = len(data["seq"])
 
-        indexed_tokens = data["seq"]
+        indexed_tokens = data["input_ids"]
 
         token_tensor = torch.tensor([indexed_tokens], device=device)
         mask_tensor = torch.tensor([[1] * len(indexed_tokens)], device=device)
         with torch.no_grad():
             encoded_layers = cluster_model.model(token_tensor, mask_tensor).last_hidden_state
         tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-        for i in range(1, len(indexed_tokens)):
+        for i in range(data["input_start_idx"], data["input_end_idx"]):
             if tokenized_words[i] in word_list:
                 words = get_knn(encoded_layers[0][i].cpu(), 700)
                 words = filter_words(words, 8)
@@ -86,4 +83,5 @@ if __name__ == '__main__':
 
     torch.manual_seed(args.seed)
     test_data = load_dataset("glue", args.task, cache_dir="./.cache/", split="validation")
-    test_data.map(get_similar_dict, num_proc=1, with_rank=True).save_to_disk(f"./adv-glue/{args.task}/FC")
+    test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/sst2/")
+    test_data.map(get_similar_dict, num_proc=1, with_rank=False).save_to_disk(f"./adv-glue/{args.task}/FC")
