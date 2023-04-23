@@ -33,6 +33,7 @@ class CarliniL2:
         self.init_rand = False  # an experiment, does a random starting point help?
         self.best_sent = None
         self.o_best_sent = None
+        self.tokenizer = None
 
     def _compare(self, output, target):
         if not isinstance(output, (float, int, np.int64)):
@@ -106,13 +107,15 @@ class CarliniL2:
                 )
                 new_placeholder = input_adv[j].data
                 temp_place = new_placeholder.expand_as(similar_wv)
-                new_dist = torch.norm(temp_place - similar_wv.data, 2, -1)  # 2范数距离，一个字一个float
+                new_dist = torch.norm(temp_place - similar_wv, 2, -1)  # 2范数距离，一个字一个float
                 _, new_word = torch.min(new_dist, 0)
+                # print(j, "new_dist", new_dist, "new_word", new_word)
                 new_word_list.append(new_word.item())
                 # input_adv.data[j, i] = self.wv[new_word.item()].data
                 input_adv.data[j] = self.itereated_var.data[j] = similar_wv[new_word.item()].data
                 del temp_place
             batch_adv_sent.append(new_word_list)
+
             output = model(input_dict=self.input_dict, perturbed=input_adv)["logits"]
 
         def reduce_sum(x, keepdim=True):
@@ -216,6 +219,7 @@ class CarliniL2:
                             print("temp:", cur_temp)
                     else:
                         model.set_temp(self.args.temp)
+                # modifier_var = modifier.clone().detach().requires_grad_(True)
                 # output 是攻击后的model的test输出  adv_img是输出的词向量矩阵， adv_sents是字的下标组成的list
                 loss, dist, output, adv_img, adv_sents = self._optimize(
                     optimizer,
@@ -226,11 +230,13 @@ class CarliniL2:
                     scale_const_var,
                     input_token
                 )
+                print("Adv Sentence", self.tokenizer.decode(adv_sents[0]))
 
-                target_label = target
-                output_logits = output
+                target_label = target.item()
+                output_logits = output.reshape(-1)  # Removing batch dimension...
                 output_label = np.argmax(output_logits)
-                di = dist
+                adv_sents = adv_sents[0]
+                di = dist[0]
                 if self.debug:
                     if step % 100 == 0:
                         print(

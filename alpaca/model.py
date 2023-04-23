@@ -1,7 +1,7 @@
 from typing import Optional, Union, Tuple, List, Dict, Any
 
 from torch.nn import CrossEntropyLoss
-from transformers import LlamaTokenizer, LlamaForCausalLM, LlamaPreTrainedModel, LlamaModel, AutoTokenizer
+from transformers import LlamaTokenizer, LlamaForCausalLM, LlamaPreTrainedModel, LlamaModel, AutoTokenizer, AutoConfig
 from transformers.modeling_outputs import SequenceClassifierOutput, CausalLMOutputWithPast, \
     SequenceClassifierOutputWithPast
 from torch import nn
@@ -33,7 +33,7 @@ class LlamaForZeroShotSequenceClassification(LlamaForCausalLM):
         elif input_ids is not None:
             batch_size, n_labels, seq_len = input_ids.shape
         else:
-            raise ValueError("Need at least one input!")
+            raise ValueError("Need at least one input_embedding!")
 
         if input_ids is not None:
             input_ids = input_ids.view(-1, seq_len)
@@ -100,7 +100,7 @@ class ZeroShotLlamaForSemAttack(nn.Module):
     def forward(
         self, input_dict: Dict[str, Union[torch.Tensor, List]], gold=None, perturbed=None, **kwargs
     ) -> Dict[str, Any]:
-        # Assuming single input for now...
+        # Assuming single input_embedding for now...
         instruction_token_embedding = self.llama_classifier.get_input_embeddings()(input_dict["instruction_token_ids"])
         if perturbed is not None:
             input_token_embedding = perturbed
@@ -145,7 +145,7 @@ class ZeroShotLlamaForSemAttack(nn.Module):
         }
 
         out = self.llama_classifier(**classifier_args, **kwargs)
-        ret = {"pred": out.logits}
+        ret = {"pred": out.logits, "logits": out.logits}
         if gold:
             ret["loss"] = out.loss
         ret['embedding'] = out.hidden_states  # FIXME: Double check which hidden state we should get

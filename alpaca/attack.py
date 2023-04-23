@@ -51,11 +51,13 @@ def transform(seq, unk_words_dict=None):
 
 
 def init_dict():
-    return {util.bos_id: [util.bos_id], util.eos_id: [util.eos_id]}
+    # {util.bos_id: [util.bos_id], util.eos_id: [util.eos_id]} -> not needed as perturbed region is only part of
+    # the prompt
+    return dict()
 
 
 def get_word_from_token(token):
-    token.lower()
+    return token.lower()
 
 
 def transform_token(orig_token, new_word_list):
@@ -75,6 +77,7 @@ def difference(a, b):
 
 
 def get_cluster_dict(input_cluster_dict, input_ids):
+    print(input_cluster_dict)
     cluster_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
     token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
@@ -88,7 +91,7 @@ def get_cluster_dict(input_cluster_dict, input_ids):
         candidates = input_cluster_dict[word]
         candidates = [x[0] for x in candidates]
         candidates = transform_token(token_list[i], candidates)
-        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
+        candidates = [tokenizer.convert_tokens_to_ids(x) for x in candidates]
         if input_ids[i] not in candidates:
             candidates.append(input_ids[i])
         while util.unk_id in candidates:
@@ -112,7 +115,7 @@ def get_knowledge_dict(input_knowledge_dict, input_ids):
         candidates = input_knowledge_dict[word]
         candidates = [x[0] for x in candidates]
         candidates = transform_token(token_list[i], candidates)
-        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
+        candidates = [tokenizer.convert_tokens_to_ids(x) for x in candidates]
         if input_ids[i] not in candidates:
             candidates.append(input_ids[i])
         while util.unk_id in candidates:
@@ -142,8 +145,8 @@ def get_typo_dict(input_typo_dict, input_ids):
         candidates = input_typo_dict[word]
         candidates = [x[0] for x in candidates]
         candidates = transform_token(token_list[i], candidates)
-        unk_words_dict[i] = [x for x in candidates if tokenizer._convert_token_to_id(x) == util.unk_id]
-        candidates = [tokenizer._convert_token_to_id(x) for x in candidates]
+        unk_words_dict[i] = [x for x in candidates if tokenizer.convert_tokens_to_ids(x) == util.unk_id]
+        candidates = [tokenizer.convert_tokens_to_ids(x) for x in candidates]
         if input_ids[i] not in candidates:
             candidates.append(input_ids[i])
         typo_dict[input_ids[i]] = candidates
@@ -176,7 +179,7 @@ def cw_word_attack(data_val):
 
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
     # TODO: Fix hard coded num_classes
-    cw = CarliniL2(args, logger, debug=False, targeted=True, device=device, num_classes=2)
+    cw = CarliniL2(args, logger, debug=True, targeted=True, device=device, num_classes=2)
     for batch_index, batch in enumerate(tqdm(test_batch)):
         print(batch)
         inputs = batch
@@ -230,21 +233,24 @@ def cw_word_attack(data_val):
             synset = list(set(v + knowledge_dict[k]))
             knowledge_dict[k] = synset
 
+        for k, v in knowledge_dict.items():
+            print(k, v)
         cw.wv = knowledge_dict
         cw.mask = cw_mask
         cw.seq = inputs['input_token_ids']
         cw.batch_info = batch
+        cw.tokenizer = tokenizer
 
         # attack
         adv_data = cw.run(model, input_embedding, attack_targets, inputs)
         # retest
         adv_seq = inputs['input_token_ids'].clone().detach().to(device)
-        for bi, (add_start, add_end) in enumerate(zip(batch_add_start, batch_add_end)):
-            if bi in cw.o_best_sent:
-                for i in range(add_start, add_end):
-                    adv_seq.data[bi, i] = knowledge_dict[adv_seq.data[bi, i].item()][cw.o_best_sent[bi][i - add_start]]
+        for i in range(batch_add_start[0], batch_add_end[0]):
+            print("adv_seq[i]", adv_seq[i], "knowledge_dict[adv_seq[i].item()]", knowledge_dict[adv_seq[i].item()])
+            adv_seq[i] = knowledge_dict[adv_seq[i].item()][cw.o_best_sent[i - batch_add_start[0]]]
         adv_inputs = copy.deepcopy(inputs)
         adv_inputs['input_token_ids'] = adv_seq
+        print("Adv Sentence", tokenizer.decode(adv_inputs['input_token_ids']))
 
         out = model(input_dict=adv_inputs)["logits"]
         prediction = torch.max(out, 1)[1]
@@ -266,7 +272,6 @@ def cw_word_attack(data_val):
         ori_labels.append(label.item())
         ori_preds.append(ori_prediction.item())
         preds.append(prediction.item())
-        print(tokenizer.convert_tokens_to_string(tokenizer.convert_ids_to_tokens(adv_seq.detach().cpu().numpy())))
 
     message = 'For target model {}:\noriginal accuracy: {:.2f}%,\nadv accuracy: {:.2f}%,\n' \
               'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'
