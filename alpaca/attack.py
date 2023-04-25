@@ -187,7 +187,7 @@ def cw_word_attack(data_val):
         batch_add_end = batch['add_end'] = []
         batch['seq_len'] = []
         for i, sentence in enumerate(batch['sentence']):
-            batch['add_start'].append(0)
+            batch['add_start'].append(2)  # first two tokens: '▁sentence', ':'
             batch['add_end'].append(len(inputs['input_token_ids'][i]))
             batch['seq_len'].append(batch['add_end'][i])
             print(inputs['input_token_ids'][i][batch['add_start'][i]:batch['add_end'][i]])
@@ -218,7 +218,7 @@ def cw_word_attack(data_val):
         cw_mask = np.zeros(input_embedding.shape).astype(np.float32)
         cw_mask = torch.from_numpy(cw_mask).float().to(device)
         for i, sentence in enumerate(batch['sentence']):
-            cw_mask[i][batch['add_start'][i]:batch['add_end'][i]] = 1
+            cw_mask[batch['add_start'][i]:batch['add_end'][i]] = 1
 
         # FIXME: Batched processing
         cluster_char_dict = get_cluster_dict(json.loads(batch['similar_dict'][0]), inputs['input_token_ids'])
@@ -250,6 +250,7 @@ def cw_word_attack(data_val):
             adv_seq[i] = knowledge_dict[adv_seq[i].item()][cw.o_best_sent[i - batch_add_start[0]]]
         adv_inputs = copy.deepcopy(inputs)
         adv_inputs['input_token_ids'] = adv_seq
+        print("Sentence", tokenizer.decode(inputs['input_token_ids']))
         print("Adv Sentence", tokenizer.decode(adv_inputs['input_token_ids']))
 
         out = model(input_dict=adv_inputs)["logits"]

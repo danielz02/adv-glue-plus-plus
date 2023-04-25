@@ -112,7 +112,7 @@ class CarliniL2:
                 # print(j, "new_dist", new_dist, "new_word", new_word)
                 new_word_list.append(new_word.item())
                 # input_adv.data[j, i] = self.wv[new_word.item()].data
-                input_adv.data[j] = self.itereated_var.data[j] = similar_wv[new_word.item()].data
+                input_adv.data[j] = similar_wv[new_word.item()].data
                 del temp_place
             batch_adv_sent.append(new_word_list)
 
@@ -144,7 +144,7 @@ class CarliniL2:
             loss.backward()
         else:
             loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_([modifier_var], self.args.clip)
+        torch.nn.utils.clip_grad_norm_([modifier_var], self.args.clip)  # 0.5
         optimizer.step()
         # modifier_var.data -= 2 * modifier_var.grad.data
         # modifier_var.grad.data.zero_()
@@ -194,7 +194,7 @@ class CarliniL2:
             modifier = modifier.to(self.device)
         modifier_var = modifier.clone().detach().requires_grad_(True)
 
-        optimizer = optim.Adam([modifier_var], lr=self.args.lr)
+        optimizer = optim.Adam([modifier_var], lr=self.args.lr)  # 0.1
 
         for search_step in range(self.binary_search_steps):
             best_l2 = 1e10
@@ -230,7 +230,7 @@ class CarliniL2:
                     scale_const_var,
                     input_token
                 )
-                print("Adv Sentence", self.tokenizer.decode(adv_sents[0]))
+                # print("Adv Sentence", self.tokenizer.decode(adv_sents[0]))
 
                 target_label = target.item()
                 output_logits = output.reshape(-1)  # Removing batch dimension...
@@ -238,7 +238,7 @@ class CarliniL2:
                 adv_sents = adv_sents[0]
                 di = dist[0]
                 if self.debug:
-                    if step % 100 == 0:
+                    # if step % 100 == 0:
                         print(
                             'dist: {0:.5f}, output: {1:>3}, {2:5.3}, target {3:>3}'
                             .format(di, output_label, output_logits[output_label], target_label)
