@@ -10,6 +10,8 @@ from transformers import AutoTokenizer
 from tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, GLUE_TASK_TO_KEYS
 from model import ZeroShotLlamaForSemAttack
 import ssl
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -93,6 +95,15 @@ def dataset_mapping(x):
 
 
 def main():
+    import tensorflow as tf
+    physical_devices = tf.config.list_physical_devices('GPU')
+    try:
+        for dev in physical_devices:
+            tf.config.experimental.set_memory_growth(dev, True)
+    except RuntimeError:
+        # Invalid device or cannot modify virtual devices once initialized.
+        pass
+
     args = util.get_args()
     dataset = datasets.load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation").map(function=dataset_mapping)
 
