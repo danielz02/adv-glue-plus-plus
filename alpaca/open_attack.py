@@ -1,10 +1,12 @@
 '''
 This example code shows how to use the PWWS attack model to attack a customized sentiment analysis model.
 '''
+import os
 import OpenAttack
 import numpy as np
 import datasets
 import util
+import json
 import torch
 from transformers import AutoTokenizer
 from tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, GLUE_TASK_TO_KEYS
@@ -87,11 +89,52 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
         return np.array(ret)
 
 
-def dataset_mapping(x):
-    return {
-        "x": x["sentence"],
-        "y": 1 if x["label"] > 0.5 else 0,
-    }
+def get_dataset(args, model):
+    # split = 'validation'
+    if task == 'mnli':
+        split = 'validation_matched'
+    elif task == 'mnli-mm':
+        split = 'validation_mismatched'
+    else:
+        split = 'validation'
+    if args.task in ['qqp', 'qnli', 'mnli', 'mnli-mm']:
+        split += '[:1000]'
+    dataset = datasets.load_dataset("glue", args.task.replace('-mm', ''), cache_dir=args.cache_dir, split=split)
+    dataset = dataset.map(function=get_dataset_mapping(model, args.task))
+    return dataset
+
+
+def get_dataset_mapping(model, task):
+    labels = ALPACA_LABEL_CANDIDATE[task]
+    
+    def dataset_mapping(x):
+        target = 0
+        if len(labels) == 3:
+            if x["label"] == 2:
+                target = 0
+            elif x["label"] == 0:
+                target = 2
+            else:
+                if np.random.uniform() < 0.5:
+                    target = 0
+                else:
+                    target = 2
+        elif len(labels) == 2:
+            if x["label"] == 0:
+                target = 1
+            else:
+                target = 0
+        else:
+            raise Exception('Unknown number of labels.')
+        
+        return {
+            "x": x["sentence"],
+            "y": 1 if x["label"] > 0.5 else 0,
+            "pred": model.get_pred([x["sentence"]])[0],
+            "target": target,
+        }
+    
+    return dataset_mapping
 
 
 def main():
@@ -105,18 +148,37 @@ def main():
         pass
 
     args = util.get_args()
-    dataset = datasets.load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation").map(function=dataset_mapping)
+    args.output_dir = os.path.join(args.output_dir, 'openattack', args.attack, args.task)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda:0")
     victim = ZeroShotLlamaClassifier(args, device)
 
-    attacker = OpenAttack.attackers.TextFoolerAttacker()
-    # attacker = OpenAttack.attackers.TextBuggerAttacker()
+    dataset = get_dataset(args, model=victim)
+
+    algorithm_to_attacker = {
+        'textbugger': OpenAttack.attackers.TextBuggerAttacker,
+        'textfooler': OpenAttack.attackers.TextFoolerAttacker,
+        'sememepso': OpenAttack.attackers.PSOAttacker,
+        'bertattack': OpenAttack.attackers.BERTAttacker,
+        'bae': OpenAttack.attackers.BAEAttacker,
+        'genetic': OpenAttack.attackers.GeneticAttacker,
+        'pwws': OpenAttack.attackers.PWWSAttacker,
+        'deepwordbug': OpenAttack.attackers.DeepWordBugAttacker,
+    }
+    print('Attack using', args.attack)
+    attacker = algorithm_to_attacker[args.attack]()
 
     attack_eval = OpenAttack.AttackEval(attacker, victim)
 
-    attack_eval.eval(dataset, visualize=True)
+    summary, results = attack_eval.eval(dataset, visualize=False, progress_bar=True)
     # attack_eval.eval(dataset, visualize=True, num_workers=16)  # TypeError: cannot pickle '_io.BufferedReader' object
+
+    print('Saving results to {}'.format(args.output_dir))
+    with open(os.path.join(args.output_dir, f"{args.attack}_results.json"), "w") as f:
+        json.dump(results, f, indent=4)
+    with open(os.path.join(args.output_dir, f"{args.attack}_summary.json"), "w") as f:
+        json.dump(summary, f, indent=4)
 
 
 def test():

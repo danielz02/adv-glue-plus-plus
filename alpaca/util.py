@@ -36,6 +36,9 @@ def get_args():
                         help='random seed')
     parser.add_argument('--cache_dir', type=str, default='./.cache/',
                         help='from_pretrained cache dir')
+    parser.add_argument('--attack', type=str, default='textbugger',
+                        choices=['textbugger', 'textfooler', 'sememepso', 'bertattack', 'bae', 'genetic', 'pwws', 'deepwordbug'],
+                        help='OpenAttack algorithm')
     parser.add_argument('--task', type=str, default='sst2',
                         choices=['cola', 'sst2', 'mrpc', 'stsb', 'qqp', 'mnli', 'mnli-mm', 'qnli', 'rte', 'wnli'],
                         help='GLUE tasks')
