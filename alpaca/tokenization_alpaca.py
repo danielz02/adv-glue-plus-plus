@@ -10,11 +10,22 @@ from transformers.utils import PaddingStrategy
 
 ALPACA_TASK_DESCRIPTION = {
     "sst2": "For the given input text, label the sentiment of the text as positive or negative. The answer should be "
-            "exact 'positive' or 'negative'."
+            "exact 'positive' or 'negative'.",
+    "mnli": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
+            "'no'.",
+    "qnli": "Please identify whether the sentence answers the question. The answer should be exactly 'yes' or 'no'.",
+    "qqp": "Please identify whether Question 1 has the same meaning as Question 2. The answer should be exactly 'yes' "
+           "or 'no'.",
+    "rte": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes' or 'no'."
 }
 
 ALPACA_LABEL_CANDIDATE = {
-    "sst2": ["negative", "positive"]
+    "sst2": ["negative", "positive"],
+    "mnli": ["premise", "hypothesis"],
+    "mnli-mm": ["premise", "hypothesis"],
+    "qnli": ["question", "sentence"],
+    "qqp": ["question1", "question2"],
+    "rte": ["sentence1", "sentence2"],
 }
 
 ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired with an input that provides further " \
@@ -40,7 +51,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
     assert task_name in ALPACA_LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
-    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>"]})
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<t>"]})
 
     def preprocess_function(example):
         for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
@@ -56,6 +67,11 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             tokens = tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
             tokens.remove("<i>")
+            if sentence2_key:
+                input_sep_idx = tokens.index("<t>")
+                tokens.remove("<i>")
+            else:
+                input_sep_idx = None
             input_end_idx = tokens.index("</i>")
             tokens.remove("</i>")
             label_start_idx = tokens.index("<l>")
@@ -67,11 +83,6 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             response_header_token_ids = token_ids[input_end_idx:label_start_idx].clone()
             response_token_ids = token_ids[label_start_idx:].clone()
 
-            # token_type_ids = torch.zeros_like(token_ids)
-            # token_type_ids[input_start_idx:input_end_idx] = 1
-            # token_type_ids[input_end_idx:label_start_idx] = 0
-            # token_type_ids[label_start_idx:-1] = 2
-
             if i == example["label"]:
                 example["input_ids"] = token_ids
             example[f"instruction_token_ids"] = instruction_token_ids
@@ -81,6 +92,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
+            example["input_sep_idx"] = input_sep_idx
             example["input_end_idx"] = input_end_idx
             example["label_start_idx"] = label_start_idx
 
