@@ -21,11 +21,11 @@ ALPACA_TASK_DESCRIPTION = {
 
 ALPACA_LABEL_CANDIDATE = {
     "sst2": ["negative", "positive"],
-    "mnli": ['entailment', 'neutral', 'contradiction'],
-    "mnli-mm": ['entailment', 'neutral', 'contradiction'],
-    "qnli": ['true', 'false'],
-    "qqp": ['not_equivalent', 'equivalent'],
-    "rte": ['entailment', 'not_entailment'],
+    "mnli": ['yes', 'maybe', 'no'],
+    "mnli-mm": ['yes', 'maybe', 'no'],
+    "qnli": ['yes', 'no'],
+    "qqp": ['no', 'yes'],
+    "rte": ['yes', 'no'],
 }
 
 ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired with an input that provides further " \
