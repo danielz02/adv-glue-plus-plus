@@ -51,7 +51,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
     assert task_name in ALPACA_LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
-    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>"]})
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>"]})
 
     def preprocess_function(example):
         for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
@@ -59,7 +59,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
                 sentence2 = example[sentence2_key]
-                message = f"{message}\n{sentence2_key}: {sentence2}"
+                message = f"{message}\n{sentence2_key}: <j>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = ALPACA_PROMPT_TEMPLATE.format(
                 instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
@@ -67,6 +67,11 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             tokens = tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
             tokens.remove("<i>")
+            if sentence2_key:
+                input2_start_idx = tokens.index("<j>")
+                tokens.remove("<j>")
+            else:
+                input2_start_idx = None
             input_end_idx = tokens.index("</i>")
             tokens.remove("</i>")
             label_start_idx = tokens.index("<l>")
@@ -78,10 +83,6 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             response_header_token_ids = token_ids[input_end_idx:label_start_idx].clone()
             response_token_ids = token_ids[label_start_idx:].clone()
 
-            # token_type_ids = torch.zeros_like(token_ids)
-            # token_type_ids[input_start_idx:input_end_idx] = 1
-            # token_type_ids[input_end_idx:label_start_idx] = 0
-            # token_type_ids[label_start_idx:-1] = 2
 
             if i == example["label"]:
                 example["input_ids"] = token_ids
@@ -92,6 +93,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
+            example["input2_start_idx"] = input2_start_idx
             example["input_end_idx"] = input_end_idx
             example["label_start_idx"] = label_start_idx
 
