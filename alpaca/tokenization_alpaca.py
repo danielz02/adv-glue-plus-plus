@@ -13,6 +13,8 @@ ALPACA_TASK_DESCRIPTION = {
             "exact 'positive' or 'negative'.",
     "mnli": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
             "'no'.",
+    "mnli-mm": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
+            "'no'.",
     "qnli": "Please identify whether the sentence answers the question. The answer should be exactly 'yes' or 'no'.",
     "qqp": "Please identify whether Question 1 has the same meaning as Question 2. The answer should be exactly 'yes' "
            "or 'no'.",
@@ -35,6 +37,7 @@ ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired 
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
     "mnli": ("premise", "hypothesis"),
+    "mnli-mm": ("premise", "hypothesis"),
     "mrpc": ("sentence1", "sentence2"),
     "qnli": ("question", "sentence"),
     "qqp": ("question1", "question2"),
