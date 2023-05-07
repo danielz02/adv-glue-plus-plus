@@ -12,13 +12,14 @@ from util import get_args
 class CarliniL2:
 
     def __init__(self, args, logger, targeted=True, search_steps=None, max_steps=None, device=None, debug=False,
-                 num_classes=3):
+                 num_classes=3, decode=True):
         logger.info(("const confidence lr:", args.const, args.confidence, args.lr))
         self.args = args
         self.debug = debug
         self.targeted = targeted
         self.num_classes = num_classes
-        self.confidence = args.confidence  # FIXME need to find a good value for this, 0 value used in paper not doing much...
+        # FIXME need to find a good value for this, 0 value used in paper not doing much...
+        self.confidence = args.confidence
         self.initial_const = args.const  # bumped up from default of .01 in reference code
         self.binary_search_steps = search_steps or 1
         self.repeat = self.binary_search_steps >= 10
@@ -34,6 +35,13 @@ class CarliniL2:
         self.best_sent = None
         self.o_best_sent = None
         self.tokenizer = None
+        self.iterated_var = None
+        self.do_decoding = decode
+
+        if self.do_decoding:
+            print("Will decode perturbed embedding back to input space")
+        else:
+            print("Will not decode perturbed embedding back to input space")
 
     def _compare(self, output, target):
         if not isinstance(output, (float, int, np.int64)):
@@ -90,10 +98,10 @@ class CarliniL2:
             seqback = model.get_seqback()  # FIXME: What is get_seqback()?
             batch_adv_sent = seqback.adv_sent.copy()
             seqback.adv_sent = []
-            # input_adv = self.itereated_var = modifier_var + self.itereated_var
+            # input_adv = self.iterated_var = modifier_var + self.iterated_var
         else:
             # word level attack
-            input_adv = modifier_var * self.mask + self.itereated_var
+            input_adv = modifier_var * self.mask + self.iterated_var
             # input_adv = modifier_var * self.mask + input_var
             new_word_list = []
             add_start = self.batch_info['add_start'][0]
@@ -112,7 +120,8 @@ class CarliniL2:
                 # print(j, "new_dist", new_dist, "new_word", new_word)
                 new_word_list.append(new_word.item())
                 # input_adv.data[j, i] = self.wv[new_word.item()].data
-                input_adv.data[j] = similar_wv[new_word.item()].data
+                if self.do_decoding:
+                    input_adv.data[j] = similar_wv[new_word.item()].data
                 del temp_place
             batch_adv_sent.append(new_word_list)
 
@@ -144,15 +153,15 @@ class CarliniL2:
             loss.backward()
         else:
             loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm_([modifier_var], self.args.clip)  # 0.5
+        # torch.nn.utils.clip_grad_norm_([modifier_var], self.args.clip)  # 0.5
         optimizer.step()
         # modifier_var.data -= 2 * modifier_var.grad.data
         # modifier_var.grad.data.zero_()
 
         loss_np = loss.item()
-        dist_np = dist.detach().cpu().numpy()
-        output_np = output.data.cpu().numpy()
-        input_adv_np = input_adv.data.cpu().numpy()
+        dist_np = dist.detach().cpu().float().numpy()
+        output_np = output.data.cpu().float().numpy()
+        input_adv_np = input_adv.data.cpu().float().numpy()
         return loss_np, dist_np, output_np, input_adv_np, batch_adv_sent
 
     def run(self, model, input_embedding, target, input_dict, batch_idx=0, batch_size=None, input_token=None):
@@ -168,19 +177,19 @@ class CarliniL2:
         o_best_score = -1
         o_best_logits = None
         if input_token is None:
-            best_attack = input_embedding.cpu().detach().numpy()
-            o_best_attack = input_embedding.cpu().detach().numpy()
+            best_attack = input_embedding.cpu().detach().float().numpy()
+            o_best_attack = input_embedding.cpu().detach().float().numpy()
         else:
-            best_attack = input_token.cpu().detach().numpy()
-            o_best_attack = input_token.cpu().detach().numpy()
+            best_attack = input_token.cpu().detach().float().numpy()
+            o_best_attack = input_token.cpu().detach().float().numpy()
         self.o_best_sent = {}
         self.best_sent = {}
 
         # TODO: Double check copy construction
-        # setup input_embedding (image) variable, clamp/scale as necessary
+        # set up input_embedding (image) variable, clamp/scale as necessary
         input_var = input_embedding.clone().detach().requires_grad_(False)
-        self.itereated_var = input_var.clone()
-        # setup the target variable, we need it to be in one-hot form for the loss function
+        self.iterated_var = input_var.clone()
+        # set up the target variable, we need it to be in one-hot form for the loss function
         target_onehot = torch.zeros(target.size() + (self.num_classes,))
         if self.device:
             target_onehot = target_onehot.to(self.device)
@@ -188,7 +197,7 @@ class CarliniL2:
         target_onehot.scatter_(1, target.unsqueeze(1), 1.)
         target_var = target_onehot.clone().detach().requires_grad_(False)
 
-        # setup the modifier variable, this is the variable we are optimizing over
+        # set up the modifier variable, this is the variable we are optimizing over
         modifier = torch.zeros_like(input_var).float()
         if self.device:
             modifier = modifier.to(self.device)
@@ -209,7 +218,7 @@ class CarliniL2:
                 scale_const_tensor = scale_const_tensor.to(self.device)
             scale_const_var = scale_const_tensor.clone().detach().requires_grad_(False)
 
-            for step in tqdm(range(self.max_steps)):
+            for step in range(self.max_steps):
                 # perform the attack
                 if self.mask is None:
                     if self.args.decreasing_temp:

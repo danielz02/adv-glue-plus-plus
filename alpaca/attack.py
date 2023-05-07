@@ -13,7 +13,7 @@ from transformers import AutoTokenizer
 from model import ZeroShotLlamaForSemAttack
 
 
-def transform(seq, unk_words_dict=None):
+def transform(seq, tokenizer, unk_words_dict=None):
     if unk_words_dict is None:
         unk_words_dict = {}
     if not isinstance(seq, list):
@@ -76,7 +76,7 @@ def difference(a, b):
     return tot
 
 
-def get_cluster_dict(input_cluster_dict, input_ids):
+def get_cluster_dict(input_cluster_dict, input_ids, tokenizer):
     print(input_cluster_dict)
     cluster_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
@@ -101,7 +101,7 @@ def get_cluster_dict(input_cluster_dict, input_ids):
     return cluster_dict
 
 
-def get_knowledge_dict(input_knowledge_dict, input_ids):
+def get_knowledge_dict(input_knowledge_dict, input_ids, tokenizer):
     knowledge_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
     token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
@@ -125,7 +125,7 @@ def get_knowledge_dict(input_knowledge_dict, input_ids):
     return knowledge_dict
 
 
-def get_typo_dict(input_typo_dict, input_ids):
+def get_typo_dict(input_typo_dict, input_ids, tokenizer):
     typo_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
     token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
@@ -154,7 +154,7 @@ def get_typo_dict(input_typo_dict, input_ids):
     return typo_dict, unk_words_dict
 
 
-def cw_word_attack(data_val):
+def cw_word_attack(data_val, args, model, tokenizer, device, logger):
     logger.info("Begin Attack")
     logger.info(("const confidence lr:", args.const, args.confidence, args.lr))
 
@@ -179,7 +179,7 @@ def cw_word_attack(data_val):
 
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
     # TODO: Fix hard coded num_classes
-    cw = CarliniL2(args, logger, debug=True, targeted=True, device=device, num_classes=2)
+    cw = CarliniL2(args, logger, debug=True, targeted=True, device=device, num_classes=2, decode=args.decode_adv)
     for batch_index, batch in enumerate(tqdm(test_batch)):
         print(batch)
         inputs = batch
@@ -221,9 +221,13 @@ def cw_word_attack(data_val):
             cw_mask[batch['add_start'][i]:batch['add_end'][i]] = 1
 
         # FIXME: Batched processing
-        cluster_char_dict = get_cluster_dict(json.loads(batch['similar_dict'][0]), inputs['input_token_ids'])
-        typo_dict, unk_words_dict = get_typo_dict(json.loads(batch['bug_dict'][0]), inputs['input_token_ids'])
-        knowledge_dict = get_knowledge_dict(json.loads(batch['knowledge_dict'][0]), inputs['input_token_ids'])
+        cluster_char_dict = get_cluster_dict(json.loads(batch['similar_dict'][0]), inputs['input_token_ids'], tokenizer)
+        typo_dict, unk_words_dict = get_typo_dict(
+            json.loads(batch['bug_dict'][0]), inputs['input_token_ids'], tokenizer
+        )
+        knowledge_dict = get_knowledge_dict(
+            json.loads(batch['knowledge_dict'][0]), inputs['input_token_ids'], tokenizer
+        )
 
         for k, v in cluster_char_dict.items():
             synset = list(set(v + knowledge_dict[k]))
@@ -265,8 +269,8 @@ def cw_word_attack(data_val):
         if ori_prediction.item() == label.item() and prediction.item() == attack_targets.item():
             changed_rates.append(changed_rate)
             nums_changed.append(diff)
-            orig_texts.append(transform(inputs['input_token_ids']))
-            adv_texts.append(transform(adv_seq, unk_words_dict))
+            orig_texts.append(transform(inputs['input_token_ids'], tokenizer=tokenizer))
+            adv_texts.append(transform(adv_seq, tokenizer, unk_words_dict))
             true_labels.append(label.item())
             new_labels.append(prediction.item())
             text_len.append(batch['seq_len'])
@@ -302,9 +306,13 @@ def cw_word_attack(data_val):
     joblib.dump(results, os.path.join(args.output_dir, 'attack_results.pkl'))
 
 
-if __name__ == '__main__':
+def main():
     args = util.get_args()
-    args.output_dir = os.path.join(args.output_dir, args.model, args.task)
+    args.output_dir = os.path.join(args.output_dir, args.model, args.task, "l1" if args.l1 else "l2")
+    print(f"saving to {args.output_dir}")
+    if args.tf32:
+        from torch.backends import cuda
+        torch.backends.cuda.matmul.allow_tf32 = True
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.dataset_dir, exist_ok=True)
     logger = util.init_logger(args.output_dir)
@@ -314,7 +322,11 @@ if __name__ == '__main__':
     # FIXME: Hard code for now
     model = ZeroShotLlamaForSemAttack(args.model, args.cache_dir).to(device)
     tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    model.to(device)
+    if args.bf16:
+        assert not args.tf32
+        model = model.to(device=device, dtype=torch.bfloat16)
+    else:
+        model.to(device)
     model.eval()
 
     # Set the random seed manually for reproducibility.
@@ -323,4 +335,8 @@ if __name__ == '__main__':
     test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC_FT_FK")
     test_data.set_format("pt")
 
-    cw_word_attack(test_data)
+    cw_word_attack(test_data, args, model, tokenizer, device, logger)
+
+
+if __name__ == '__main__':
+    main()
