@@ -39,6 +39,9 @@ def get_args():
     parser.add_argument('--attack', type=str, default='textbugger',
                         choices=['textbugger', 'textfooler', 'sememepso', 'bertattack', 'bae', 'genetic', 'pwws', 'deepwordbug'],
                         help='OpenAttack algorithm')
+    parser.add_argument('--fix-sentence', type=int, default=0,
+                        choices=[0, 1],
+                        help='Index of the perturbed sentence')
     parser.add_argument('--task', type=str, default='sst2',
                         choices=['cola', 'sst2', 'mrpc', 'stsb', 'qqp', 'mnli', 'mnli-mm', 'qnli', 'rte', 'wnli'],
                         help='GLUE tasks')

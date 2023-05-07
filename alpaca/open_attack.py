@@ -27,6 +27,11 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
         self.model.eval()
         self.tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
         self.tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>"]})
+        self.fixed_sentence = None
+        self.fixed_idx = self.args.fix_sentence
+
+    def fix_sentence(self, sent):
+        self.fixed_sentence = sent
 
     def preprocess_function(self, sent):
         task_name = self.args.task
@@ -34,8 +39,11 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
         sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
         example = {}
         for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
-            sentence1 = sent
+            sentence1 = self.fixed_sentence if self.fixed_idx == 0 else sent
             message = f"{sentence1_key}: {sentence1}"
+            if sentence2_key:
+                sentence2 = sent if self.fixed_idx == 0 else self.fixed_sentence
+                message = f"{message}\n{sentence2_key}: {sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = ALPACA_PROMPT_TEMPLATE.format(
                 instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
@@ -90,22 +98,24 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
 
 
 def get_dataset(args, model):
-    # split = 'validation'
-    if task == 'mnli':
+    if args.task == 'mnli':
         split = 'validation_matched'
-    elif task == 'mnli-mm':
+    elif args.task == 'mnli-mm':
         split = 'validation_mismatched'
     else:
         split = 'validation'
     if args.task in ['qqp', 'qnli', 'mnli', 'mnli-mm']:
         split += '[:1000]'
     dataset = datasets.load_dataset("glue", args.task.replace('-mm', ''), cache_dir=args.cache_dir, split=split)
-    dataset = dataset.map(function=get_dataset_mapping(model, args.task))
+    dataset = dataset.map(function=get_dataset_mapping(model, args.task, args.fix_sentence))
     return dataset
 
 
-def get_dataset_mapping(model, task):
+def get_dataset_mapping(model, task, fix_id):
     labels = ALPACA_LABEL_CANDIDATE[task]
+    sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task]
+    if task == 'sst2':
+        assert fix_id == 1
     
     def dataset_mapping(x):
         target = 0
@@ -126,11 +136,21 @@ def get_dataset_mapping(model, task):
                 target = 0
         else:
             raise Exception('Unknown number of labels.')
-        
+
+        sentence1 = x[sentence1_key]
+        if sentence2_key:
+            sentence2 = x[sentence2_key]
+        else:
+            assert fix_id == 1
+            sentence2 = None
+        input_x = sentence2 if fix_id == 0 else sentence1
+        fixed_x = sentence1 if fix_id == 0 else sentence2
+        model.fix_sentence(fixed_x)
         return {
-            "x": x["sentence"],
+            "x": input_x,
+            "fixed_x": fixed_x,
             "y": 1 if x["label"] > 0.5 else 0,
-            "pred": model.get_pred([x["sentence"]])[0],
+            "pred": model.get_pred([input_x])[0],
             "target": target,
         }
     
@@ -148,7 +168,7 @@ def main():
         pass
 
     args = util.get_args()
-    args.output_dir = os.path.join(args.output_dir, 'openattack', args.attack, args.task)
+    args.output_dir = os.path.join(args.output_dir, 'openattack', args.attack, args.task, str(args.fix_sentence))
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda:0")
