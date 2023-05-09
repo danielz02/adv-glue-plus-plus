@@ -2,6 +2,7 @@ import os.path
 from copy import deepcopy
 from typing import List, Union, Optional, Dict
 
+import numpy as np
 import torch
 from datasets import load_dataset
 from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer
@@ -13,8 +14,8 @@ ALPACA_TASK_DESCRIPTION = {
             "exact 'positive' or 'negative'.",
     "mnli": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
             "'no'.",
-    "mnli-mm": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
-            "'no'.",
+    "mnli-mm": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', "
+               "'maybe' or 'no'.",
     "qnli": "Please identify whether the sentence answers the question. The answer should be exactly 'yes' or 'no'.",
     "qqp": "Please identify whether Question 1 has the same meaning as Question 2. The answer should be exactly 'yes' "
            "or 'no'.",
@@ -54,7 +55,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
     assert task_name in ALPACA_LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
-    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>"]})
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>", "<k>"]})
 
     def preprocess_function(example):
         for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
@@ -62,7 +63,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
                 sentence2 = example[sentence2_key]
-                message = f"{message}\n{sentence2_key}: <j>{sentence2}"
+                message = f"{message}<j>\n{sentence2_key}: <k>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = ALPACA_PROMPT_TEMPLATE.format(
                 instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
@@ -71,10 +72,13 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             input_start_idx = tokens.index("<i>")
             tokens.remove("<i>")
             if sentence2_key:
-                input2_start_idx = tokens.index("<j>")
+                input1_end_idx = tokens.index("<j>")
                 tokens.remove("<j>")
+                input2_start_idx = tokens.index("<k>")
+                tokens.remove("<k>")
             else:
-                input2_start_idx = None
+                input1_end_idx = None
+                input2_start_idx = torch.nan
             input_end_idx = tokens.index("</i>")
             tokens.remove("</i>")
             label_start_idx = tokens.index("<l>")
@@ -86,7 +90,6 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             response_header_token_ids = token_ids[input_end_idx:label_start_idx].clone()
             response_token_ids = token_ids[label_start_idx:].clone()
 
-
             if i == example["label"]:
                 example["input_ids"] = token_ids
             example[f"instruction_token_ids"] = instruction_token_ids
@@ -96,9 +99,12 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
+            example["input1_end_idx"] = input1_end_idx if input1_end_idx else input_end_idx
             example["input2_start_idx"] = input2_start_idx
             example["input_end_idx"] = input_end_idx
             example["label_start_idx"] = label_start_idx
+
+        example["target"] = get_attack_target(example, task_name)
 
         return example
 
@@ -246,17 +252,53 @@ class AlpacaZeroShotTokenizer(LlamaTokenizer):
         return batch_outputs
 
 
-if __name__ == "__main__":
-    tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
-    test_data = load_dataset("glue", "sst2", cache_dir="./.cache/", split="validation")
-    if os.path.exists("./.cache/glue-preprocessed-benign/sst2/"):
-        print("Loading preprocessed results")
-        test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/sst2/")
-    else:
-        print("Loading preprocessed results")
-        test_data = test_data.map(
-            get_preprocess_function("sst2", tokenizer), num_proc=16
-        )
-        test_data.save_to_disk(f"./.cache/glue-preprocessed-benign/sst2/")
+def get_attack_target(x, task):
+    labels = ALPACA_LABEL_CANDIDATE[task]
 
-    print(test_data[0])
+    if len(labels) == 3:
+        if x["label"] == 2:
+            target = 0
+        elif x["label"] == 0:
+            target = 2
+        else:
+            if np.random.uniform() < 0.5:
+                target = 0
+            else:
+                target = 2
+    elif len(labels) == 2:
+        if x["label"] == 0:
+            target = 1
+        else:
+            target = 0
+    else:
+        raise Exception('Unknown number of labels.')
+
+    return target
+
+
+def main():
+    for task in ["mnli", "mnli-mm"]:  # ALPACA_TASK_DESCRIPTION.keys():
+        tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+
+        if task == 'mnli':
+            split = 'validation_matched'
+        elif task == 'mnli-mm':
+            split = 'validation_mismatched'
+        else:
+            split = "validation"
+        test_data = load_dataset("glue", task.replace("-mm", ""), cache_dir="./.cache/", split=split)
+        if os.path.exists(f"./.cache/glue-preprocessed-benign/{task}/"):
+            print("Loading preprocessed results")
+            test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/{task}/")
+        else:
+            print("Preprocessing results")
+            test_data = test_data.map(
+                get_preprocess_function(task, tokenizer), num_proc=16
+            )
+            test_data.save_to_disk(f"./.cache/glue-preprocessed-benign/{task}/")
+
+        print(test_data[0])
+
+
+if __name__ == "__main__":
+    main()

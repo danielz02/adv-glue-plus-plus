@@ -163,7 +163,7 @@ def test():
     test_data.set_format("pt", output_all_columns=True)
 
     model = ZeroShotLlamaForSemAttack("chavinlo/alpaca-native", cache_dir="./.cache/")
-    model.to(device)
+    model.to(device=device, dtype=torch.bfloat16)
     model.eval()
 
     sst2_dev_predictions = []
