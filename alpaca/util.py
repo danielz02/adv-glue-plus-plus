@@ -54,9 +54,9 @@ def get_args():
                         type=str,
                         default='adv_results/dataset',
                         help="pre-processed dataset")
-    parser.add_argument('--embedding-space', type=str, default='./static/s.npy',
+    parser.add_argument('--embedding-space', type=str, default='./static/s_new.npy',
                         help='location of the embedding data, should be a json file')
-    parser.add_argument('--word-list', type=str, default='./static/word_list.npy',
+    parser.add_argument('--word-list', type=str, default='./static/word_list_new.npy',
                         help='location of the word list data, should be a json file')
     parser.add_argument('--const', type=float, default=1e4,
                         help='initial const for cw attack')
@@ -71,6 +71,10 @@ def get_args():
                         help='use l1 norm')
     parser.add_argument('--clip', type=float, default=0.5,
                         help='clip to prevent the too large grad in LSTM')
+    parser.add_argument('--decode-adv', action="store_true",
+                        help='whether to decode from perturbed embedding to input token')
+    parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--tf32", action="store_true")
 
     return parser.parse_args()
 
@@ -106,6 +110,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    from torch.backends import cudnn
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 

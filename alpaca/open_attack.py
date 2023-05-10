@@ -5,14 +5,16 @@ import os
 import OpenAttack
 import numpy as np
 import datasets
+from datasets import load_dataset
+
 import util
 import json
 import torch
 from transformers import AutoTokenizer
-from tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, GLUE_TASK_TO_KEYS
+from tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, \
+    GLUE_TASK_TO_KEYS, get_attack_target
 from model import ZeroShotLlamaForSemAttack
 import ssl
-from torch.profiler import profile, record_function, ProfilerActivity
 
 
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -62,13 +64,6 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
             response_header_token_ids = token_ids[input_end_idx:label_start_idx].clone()
             response_token_ids = token_ids[label_start_idx:].clone()
 
-            # token_type_ids = torch.zeros_like(token_ids)
-            # token_type_ids[input_start_idx:input_end_idx] = 1
-            # token_type_ids[input_end_idx:label_start_idx] = 0
-            # token_type_ids[label_start_idx:-1] = 2
-
-            # if i == example["label"]:
-            #     example["input_ids"] = token_ids
             example[f"instruction_token_ids"] = instruction_token_ids
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
@@ -97,6 +92,37 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
         return np.array(ret)
 
 
+def get_dataset_mapping(model, task, fix_id):
+    sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task]
+    if task == 'sst2':
+        assert fix_id == 1
+
+    def dataset_mapping(x):
+        target = get_attack_target(x, task)
+        sentence1 = x[sentence1_key]
+        if sentence2_key:
+            sentence2 = x[sentence2_key]
+        else:
+            assert fix_id == 1
+            sentence2 = None
+        input_x = sentence2 if fix_id == 0 else sentence1
+        fixed_x = sentence1 if fix_id == 0 else sentence2
+
+        return_dict = {
+            "x": input_x,
+            "fixed_x": fixed_x,
+            "y": 1 if x["label"] > 0.5 else 0,
+            "target": target,
+        }
+        if model:
+            model.fix_sentence(fixed_x)
+            model["pred"] = model.get_pred([input_x])[0]
+
+        return return_dict
+
+    return dataset_mapping
+
+
 def get_dataset(args, model):
     if args.task == 'mnli':
         split = 'validation_matched'
@@ -106,55 +132,9 @@ def get_dataset(args, model):
         split = 'validation'
     if args.task in ['qqp', 'qnli', 'mnli', 'mnli-mm']:
         split += '[:1000]'
-    dataset = datasets.load_dataset("glue", args.task.replace('-mm', ''), cache_dir=args.cache_dir, split=split)
+    dataset = load_dataset("glue", args.task.replace('-mm', ''), cache_dir=args.cache_dir, split=split)
     dataset = dataset.map(function=get_dataset_mapping(model, args.task, args.fix_sentence))
     return dataset
-
-
-def get_dataset_mapping(model, task, fix_id):
-    labels = ALPACA_LABEL_CANDIDATE[task]
-    sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task]
-    if task == 'sst2':
-        assert fix_id == 1
-    
-    def dataset_mapping(x):
-        target = 0
-        if len(labels) == 3:
-            if x["label"] == 2:
-                target = 0
-            elif x["label"] == 0:
-                target = 2
-            else:
-                if np.random.uniform() < 0.5:
-                    target = 0
-                else:
-                    target = 2
-        elif len(labels) == 2:
-            if x["label"] == 0:
-                target = 1
-            else:
-                target = 0
-        else:
-            raise Exception('Unknown number of labels.')
-
-        sentence1 = x[sentence1_key]
-        if sentence2_key:
-            sentence2 = x[sentence2_key]
-        else:
-            assert fix_id == 1
-            sentence2 = None
-        input_x = sentence2 if fix_id == 0 else sentence1
-        fixed_x = sentence1 if fix_id == 0 else sentence2
-        model.fix_sentence(fixed_x)
-        return {
-            "x": input_x,
-            "fixed_x": fixed_x,
-            "y": 1 if x["label"] > 0.5 else 0,
-            "pred": model.get_pred([input_x])[0],
-            "target": target,
-        }
-    
-    return dataset_mapping
 
 
 def main():
@@ -203,6 +183,7 @@ def main():
 
 def test():
     args = util.get_args()
+    dataset_mapping = get_dataset_mapping(args.model, args.task, args.fix_sentence)
     dataset = datasets.load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation").map(function=dataset_mapping)
 
     device = torch.device("cuda:1")

@@ -31,9 +31,12 @@ ALPACA_LABEL_CANDIDATE = {
     "rte": ['yes', 'no'],
 }
 
-ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired with an input that provides further " \
-                         "context. Write a response that appropriately completes the request.\n\n" \
-                         "### Instruction:\n{instruction}\n\n### Input:\n<i>{input}</i>\n\n### Response:<l>{label} </s>"
+# Updated based on https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md
+# More specific instructions here: https://github.com/lm-sys/FastChat/blob/00d9e6675bdff60be6603ffff9313b1d797d2e3e/fastchat/conversation.py#L115-L124
+# And here: https://github.com/lm-sys/FastChat/blob/00d9e6675bdff60be6603ffff9313b1d797d2e3e/fastchat/conversation.py#L36
+VICUNA_PROMPT_TEMPLATE = "A chat between a curious user and an artificial intelligence assistant. " +\
+                         "The assistant gives helpful, detailed, and polite answers to the user's questions. " +\
+                         "USER: {instruction}\n<i>{input}</i> ASSISTANT:<l>{label} </s>"
 
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
@@ -65,7 +68,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
                 sentence2 = example[sentence2_key]
                 message = f"{message}<j>\n{sentence2_key}: <k>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
-            prompt = ALPACA_PROMPT_TEMPLATE.format(
+            prompt = VICUNA_PROMPT_TEMPLATE.format(
                 instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
             )
             tokens = tokenizer.tokenize(prompt)
