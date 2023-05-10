@@ -24,7 +24,8 @@ class ClassificationAttacker(Attacker):
         else:
             origin_x = victim.get_pred([ input_["x"] ])[0]
             goal = ClassifierGoal( origin_x, targeted=False )
-        
+
+        victim.fix_sentence(input_["fixed_x"])
         adversarial_sample = self.attack(victim, input_["x"], goal)
 
         if adversarial_sample is not None:

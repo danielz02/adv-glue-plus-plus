@@ -176,6 +176,7 @@ class AttackEval:
         success_inst = 0
 
         # Begin for
+        results = []
         for i, res in enumerate(result_iterator):
             total_inst += 1
             success_inst += int(res["success"])
@@ -237,6 +238,7 @@ class AttackEval:
                     total_result[kw] = 0
                 total_result_cnt[kw] += 1
                 total_result[kw] += float(val)
+            results.append(res)
         # End for
 
         summary = {}
@@ -253,7 +255,7 @@ class AttackEval:
         
         if visualize:
             result_visualizer(summary, sys.stdout.write)
-        return summary
+        return summary, results
     
     ## TODO generate adversarial samples
     
