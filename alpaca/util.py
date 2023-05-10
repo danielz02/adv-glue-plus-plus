@@ -54,9 +54,9 @@ def get_args():
                         type=str,
                         default='adv_results/dataset',
                         help="pre-processed dataset")
-    parser.add_argument('--embedding-space', type=str, default='./static/s.npy',
+    parser.add_argument('--embedding-space', type=str, default='./static/s_new.npy',
                         help='location of the embedding data, should be a json file')
-    parser.add_argument('--word-list', type=str, default='./static/word_list.npy',
+    parser.add_argument('--word-list', type=str, default='./static/word_list_new.npy',
                         help='location of the word list data, should be a json file')
     parser.add_argument('--const', type=float, default=1e4,
                         help='initial const for cw attack')
