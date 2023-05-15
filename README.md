@@ -22,11 +22,26 @@ You may use our code to attack other tasks or other datasets.
     conda env create --file alpaca.yml
     ```
    
-Otherwise, if you went with mamba, run:
+   Otherwise, if you went with mamba, run:
 
    ```
-    mamba env create --file alpaca.yml
+   mamba env create --file alpaca.yml
    ```
+
+4. Activate the virtual environment.
+
+   `conda activate alpaca`
+
+5. Upgrade pip:
+
+    `pip install --upgrade pip`
+
+6. Manually install `transformers`. This needs to be done manually!
+
+   ```
+   pip install git+https://github.com/huggingface/transformers   
+   ```
+
 
 1. Construct BERT embedding space. We follow the process in paper ["Visualizing and Measuring the Geometry of BERT"](https://arxiv.org/abs/1906.02715) ([GitHub](https://github.com/PAIR-code/interpretability)) to calculate word embeddings. The embedding space is stored as an N * 768 tensor, where N is the number of total embeddings. Use a list to indicate which word corresponds to each vector. Please see `word_list.pkl` for more details.
 
