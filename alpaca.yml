@@ -318,7 +318,6 @@ dependencies:
       - dill==0.3.6
       - fonttools==4.39.3
       - fsspec==2023.4.0
-      - "git+https://github.com/huggingface/transformers"
       - huggingface-hub==0.13.4
       - humanfriendly==10.0
       - humanize==4.6.0
@@ -335,7 +334,6 @@ dependencies:
       - sentencepiece==0.1.98
       - slurm-gpustat==0.0.12
       - tokenizers==0.13.3
-      - transformers==4.29.0.dev0
       - tzdata==2023.3
       - xxhash==3.2.0
 prefix: /data/chenhui_zhang/anaconda3/envs/alpaca
