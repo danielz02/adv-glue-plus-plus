@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import string
 
-from datasets import load_dataset
+from datasets import load_from_disk
 from transformers import AutoTokenizer
 
 from tokenization_alpaca import GLUE_TASK_TO_KEYS
@@ -125,14 +125,7 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir=args.cache_dir)
     word_list = set(np.load(args.word_list))
     torch.manual_seed(args.seed)
-    if args.task == 'mnli':
-        split = 'validation_matched'
-    elif args.task == 'mnli-mm':
-        split = 'validation_mismatched'
-    else:
-        split = "validation"
-    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
-    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC")
+    test_data = load_from_disk(f"./adv-glue/{args.task}/FC")
     if "input_embeddings" in test_data.column_names:
         test_data = test_data.remove_columns(["input_embeddings"])
     test_data.map(get_bug_dict, num_proc=64).save_to_disk(f"./adv-glue/{args.task}/FC_FT")

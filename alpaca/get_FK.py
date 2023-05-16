@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import joblib
 from collections import Counter
-from datasets import load_dataset
+from datasets import load_from_disk
 
 from tokenization_alpaca import GLUE_TASK_TO_KEYS
 from util import get_args
@@ -73,14 +73,7 @@ if __name__ == '__main__':
 
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
-    if args.task == 'mnli':
-        split = 'validation_matched'
-    elif args.task == 'mnli-mm':
-        split = 'validation_mismatched'
-    else:
-        split = "validation"
-    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
-    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC_FT")
+    test_data = load_from_disk(f"./adv-glue/{args.task}/FC_FT")
     if "input_embeddings" in test_data.column_names:
         test_data = test_data.remove_columns(["input_embeddings"])
     test_data.map(get_knowledge_dict, num_proc=64).save_to_disk(f"./adv-glue/{args.task}/FC_FT_FK")

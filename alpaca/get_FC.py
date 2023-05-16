@@ -8,7 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 import faiss
 from util import get_args
 from collections import Counter
-from datasets import load_dataset
+from datasets import load_from_disk
 from multiprocess import set_start_method
 from tokenization_alpaca import GLUE_TASK_TO_KEYS
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer
@@ -99,15 +99,7 @@ if __name__ == '__main__':
         gpu_index.add(embedding_space)
         faiss.write_index(faiss.index_gpu_to_cpu(gpu_index), index_path)
 
-    if args.task == 'mnli':
-        split = 'validation_matched'
-    elif args.task == 'mnli-mm':
-        split = 'validation_mismatched'
-    else:
-        split = "validation"
-
-    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
-    test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/{args.task}/")
+    test_data = load_from_disk(f"./.cache/glue-preprocessed-benign/{args.task}/")
     test_data.set_format(type="pt")
 
     if os.path.exists(f"./.cache/glue-embedding-benign/{args.task}/"):
