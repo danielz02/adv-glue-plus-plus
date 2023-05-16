@@ -20,8 +20,7 @@ import os
 import joblib
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer
-from transformers.models.bert.modeling_bert import BertModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
 import sqlite3 as sql
 import re
 import numpy as np
@@ -76,7 +75,7 @@ def project_umap(points):
 
 def get_embeddings(word, sentences, model, tokenizer, device):
     """Get the embedding for a word in each sentence."""
-    # Tokenized input
+    # Tokenized input_embedding
     points = []
     batch = []
     mask = []
@@ -102,7 +101,7 @@ def get_embeddings(word, sentences, model, tokenizer, device):
                 # Match start of the word
                 if token.startswith("▁"):
                     j = min(i + 1, len(tokenized_text))
-                    while not tokenized_text[j].startswith("▁"):
+                    while j < len(tokenized_text) and not tokenized_text[j].startswith("▁"):
                         j = min(j + 1, len(tokenized_text))
                         if j == len(tokenized_text):
                             break
@@ -111,10 +110,14 @@ def get_embeddings(word, sentences, model, tokenizer, device):
                         break
             if not word_idx:
                 print(e, word, tokenized_text)
+                continue
 
         batch.append(indexed_tokens)
         mask.append([1] * len(indexed_tokens))
         word_indices.append(word_idx)
+
+    if len(batch) == 0 or len(mask) == 0:
+        return None
 
     tokens_tensor = pad_sequence([torch.from_numpy(np.array(x)) for x in batch], batch_first=True).to(device)
     masks_tensor = pad_sequence([torch.from_numpy(np.array(x)) for x in mask], batch_first=True).to(device)
@@ -122,18 +125,19 @@ def get_embeddings(word, sentences, model, tokenizer, device):
     # Predict hidden states features for each layer
     with torch.no_grad():
         # (batch_size, sequence_length, hidden_size) * (1 + num_hidden_layers)
-        batch_size = tokens_tensor.size(0)
-
-        encoded_layers = torch.concat([
-            model.model(
-                input_ids=tokens_tensor[:(batch_size // 2)], attention_mask=masks_tensor[:(batch_size // 2)],
-                output_hidden_states=False
-            ).last_hidden_state,
-            model.model(
-                input_ids=tokens_tensor[(batch_size // 2):], attention_mask=masks_tensor[(batch_size // 2):],
-                output_hidden_states=False
-            ).last_hidden_state
-        ], dim=0)
+        num_batches = 8
+        batch_size = tokens_tensor.size(0) // num_batches
+        encoded_layers = []
+        for batch_num in range(num_batches):
+            batch_start = batch_num * batch_size
+            batch_end = (batch_num + 1) * batch_size if batch_num < num_batches - 1 else tokens_tensor.size(0)
+            encoded_layers.append(
+                model.model(
+                    input_ids=tokens_tensor[batch_start:batch_end], attention_mask=masks_tensor[batch_start:batch_end],
+                    output_hidden_states=False
+                ).last_hidden_state,
+            )
+        encoded_layers = torch.cat(encoded_layers, dim=0)
 
     for i, idx in enumerate(word_indices):
         points.append(encoded_layers[i][idx].cpu().numpy())
@@ -201,17 +205,17 @@ def get_poses(word, sentences):
 
 
 def init_models():
-    # FIXME: This only works with -np "$SLURM_NTASKS" --map-by ppr:5:node --rank-by slot --report-bindings
+    # FIXME: This only works with the current rankfile
     gpu_dev = int(local_rank) - 1 if rank <= 4 else int(local_rank)
     device = torch.device(f"cuda:{gpu_dev}" if torch.cuda.is_available() else "cpu")
     print(f"rank {rank} device : {device}")
 
     # Load pre-trained model tokenizer (vocabulary)
-    tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
     # Load pre-trained model (weights)
     model = AutoModelForCausalLM.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
     model.eval()
-    model = model.to(device)
+    model = model.to(device=device, dtype=torch.bfloat16)
 
     return device, tokenizer, model
 
@@ -249,7 +253,10 @@ def main():
         if tag == tags.READY:
             print(f"[{rank}] Sending tasks to worker {source}...")
             num_tasks_per_worker = len(words) // num_workers
-            tasks = np.arange((source - 1) * num_tasks_per_worker, source * num_tasks_per_worker)
+            tasks = np.arange(
+                (source - 1) * num_tasks_per_worker,
+                source * num_tasks_per_worker if source < num_workers else len(words)
+            )
             comm.send(tasks, dest=source, tag=tags.START)
             print(f"[{rank}] Sent {len(tasks)} tasks to worker {source}")
         elif tag == tags.DONE:
@@ -307,19 +314,25 @@ def worker():
 
         if tag == tags.START:
             print(f'[{rank}] Received {len(data)} tasks')
-            for task_index in tqdm(data):
+            for task_index in tqdm(data, desc=f"Rank {rank}"):
                 word = words[task_index]
-                sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
+
+                if os.path.exists(f'./static/pickles/{word}.npz'):
+                    print(f'[{rank}] Skipping {word}')
+                    continue
 
                 # Take at most 200 sentences.
-                sentences_w_word = sentences_w_word[:100]  # Changed from default
+                sentences_w_word = [t for t in sentences if ' ' + word + ' ' in t]
+                sentences_w_word = sentences_w_word[:1000]  # Changed from default
 
                 # And don't show anything if there are less than 100 sentences.
-                if len(sentences_w_word) < 50:  # Changed from default
+                if len(sentences_w_word) < 100:  # Changed from default
                     continue
                 try:
                     locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
                     np.savez(f'./static/pickles/{word}.npz', **locs_and_data)
+                except IndexError as e:
+                    print(e)
                 except ValueError as e:
                     print(e)
                 print(f'[{rank}] Finished processing for word : {word}')
