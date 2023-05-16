@@ -36,43 +36,35 @@ def get_similar_dict(data):
 
     similar_char_dict = {}
 
-    for key in GLUE_TASK_TO_KEYS[args.task]:
-        if not key:
-            continue
+    indexed_tokens = data["input_ids"]
+    input_embeddings = data["input_embeddings"][data["input_start_idx"]:data["input_end_idx"]]
+    # TODO: How to deal with special character ▁?
+    tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
+    knn_dist, knn_indices = gpu_index.search(input_embeddings, 700)
 
-        indexed_tokens = data["input_ids"]
-        input_embeddings = data["input_embeddings"][data["input_start_idx"]:data["input_end_idx"]]
-        # TODO: How to deal with special character ▁?
-        tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-        knn_dist, knn_indices = gpu_index_flat.search(input_embeddings, 700)
-
-        for i in range(data["input_start_idx"], data["input_end_idx"]):
-            if tokenized_words[i].strip("▁") in word_list_set:
-                words = get_topk_words(knn_indices[i - data["input_start_idx"]])
-                words = filter_words(words, 8)
-            else:
-                words = []
-            if len(words) >= 1:
-                similar_char_dict[tokenized_words[i]] = [
-                    tokenizer.tokenize(word, add_special_tokens=False) for word in words
-                ]
-            else:
-                similar_char_dict[tokenized_words[i]] = [tokenized_words[i]]
+    for i in range(data["input_start_idx"], data["input_end_idx"]):
+        if tokenized_words[i].strip("▁") in word_list_set:
+            words = get_topk_words(knn_indices[i - data["input_start_idx"]])
+            words = filter_words(words, 8)
+        else:
+            words = []
+        if len(words) >= 1:
+            similar_char_dict[tokenized_words[i]] = [
+                tokenizer.tokenize(word, add_special_tokens=False) for word in words
+            ]
+        else:
+            similar_char_dict[tokenized_words[i]] = [tokenized_words[i]]
 
     data["similar_dict"] = json.dumps(similar_char_dict)
     return data
 
 
 def get_input_embedding(batch):
-    for key in GLUE_TASK_TO_KEYS[args.task]:
-        if not key:
-            continue
-
-        tokens_tensor = pad_sequence(batch["input_ids"], batch_first=True).to(device)
-        masks_tensor = pad_sequence([torch.ones_like(x) for x in batch["input_ids"]], batch_first=True).to(device)
-        with torch.no_grad():
-            encoded_layers = model.model(input_ids=tokens_tensor, attention_mask=masks_tensor).last_hidden_state
-        batch["input_embeddings"] = encoded_layers.cpu().numpy()
+    tokens_tensor = pad_sequence(batch["input_ids"], batch_first=True).to(device)
+    masks_tensor = pad_sequence([torch.ones_like(x) for x in batch["input_ids"]], batch_first=True).to(device)
+    with torch.no_grad():
+        encoded_layers = model.model(input_ids=tokens_tensor, attention_mask=masks_tensor).last_hidden_state
+    batch["input_embeddings"] = encoded_layers.cpu().numpy()
 
     return batch
 
@@ -86,27 +78,49 @@ if __name__ == '__main__':
     device = torch.device("cuda")
     tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
 
-    embedding_space = torch.from_numpy(np.load(args.embedding_space))
     word_list = np.load(args.word_list).reshape(-1)
     word_list_set = set(word_list)
 
+    m = 8  # number of centroid IDs in final compressed vectors
+    d = 4096
+    nlist = 50
+    bits = 8  # number of bits in each centroid
     res = faiss.StandardGpuResources()
-    index_flat = faiss.IndexFlatL2(4096)
-    gpu_index_flat = faiss.index_cpu_to_gpu(res, 0, index_flat)
-    gpu_index_flat.add(embedding_space)
+    index_path = f"{args.embedding_space}.faiss"
+    if os.path.exists(index_path):
+        index = faiss.read_index(index_path)
+        gpu_index = faiss.index_cpu_to_gpu(res, 0, index)
+    else:
+        embedding_space = torch.from_numpy(np.load(args.embedding_space))
+        quantizer = faiss.IndexFlatL2(d)  # we keep the same L2 distance flat index
+        index = faiss.IndexIVFPQ(quantizer, d, nlist, m, bits)
+        gpu_index = faiss.index_cpu_to_gpu(res, 0, index)
+        gpu_index.train(embedding_space)
+        gpu_index.add(embedding_space)
+        faiss.write_index(faiss.index_gpu_to_cpu(gpu_index), index_path)
 
-    test_data = load_dataset("glue", args.task, cache_dir="./.cache/", split="validation")
-    test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/sst2/")
+    if args.task == 'mnli':
+        split = 'validation_matched'
+    elif args.task == 'mnli-mm':
+        split = 'validation_mismatched'
+    else:
+        split = "validation"
+
+    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
+    test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/{args.task}/")
     test_data.set_format(type="pt")
 
-    if os.path.exists(f"./.cache/glue-embedding-benign/sst2/"):
-        test_data = test_data.load_from_disk(f"./.cache/glue-embedding-benign/sst2/")
+    if os.path.exists(f"./.cache/glue-embedding-benign/{args.task}/"):
+        test_data = test_data.load_from_disk(f"./.cache/glue-embedding-benign/{args.task}/")
     else:
         model = AutoModelForCausalLM.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
         model.eval()
         model = model.to(device)
 
         test_data = test_data.map(get_input_embedding, num_proc=1, with_rank=False, batched=True, batch_size=64)
-        test_data.save_to_disk(f"./.cache/glue-embedding-benign/sst2/")
+        test_data.save_to_disk(f"./.cache/glue-embedding-benign/{args.task}/")
 
-    test_data.map(get_similar_dict, num_proc=1, with_rank=False).save_to_disk(f"./adv-glue/{args.task}/FC")
+    test_data = test_data.map(get_similar_dict, num_proc=1, with_rank=False)
+    if "input_embeddings" in test_data.column_names:
+        test_data = test_data.remove_columns(["input_embeddings"])
+    test_data.save_to_disk(f"./adv-glue/{args.task}/FC")

@@ -1,5 +1,5 @@
 import json
-import random
+from numpy import random
 import joblib
 import numpy as np
 import torch
@@ -14,7 +14,7 @@ from util import get_args
 
 def bug_delete(word):
     res = word
-    point = random.randint(1, len(word) - 2)
+    point = random.randint(1, len(word) - 2 + 1)
     res = res[0:point] + res[point + 1:]
     return res
 
@@ -23,7 +23,7 @@ def bug_swap(word):
     if len(word) <= 4:
         return word
     res = word
-    points = random.sample(range(1, len(word) - 1), 2)
+    points = random.choice(range(1, len(word) - 1), 2, replace=False)
     a = points[0]
     b = points[1]
 
@@ -38,12 +38,12 @@ def bug_swap(word):
 def bug_sub_C(word):
     res = word
     key_neighbors = get_key_neighbors()
-    point = random.randint(0, len(word) - 1)
+    point = random.randint(0, len(word) - 1 + 1)
 
     if word[point] not in key_neighbors:
         return word
     choices = key_neighbors[word[point]]
-    subbed_choice = choices[random.randint(0, len(choices) - 1)]
+    subbed_choice = choices[random.randint(0, len(choices) - 1 + 1)]
     res = list(res)
     res[point] = subbed_choice
     res = ''.join(res)
@@ -55,8 +55,8 @@ def bug_insert(word):
     if len(word) >= 6:
         return word
     res = word
-    point = random.randint(1, len(word) - 1)
-    res = res[0:point] + random.choice(string.ascii_lowercase) + res[point:]
+    point = random.randint(1, len(word) - 1 + 1)
+    res = res[0:point] + random.choice(string.ascii_lowercase, size=1) + res[point:]
     return res
 
 
@@ -103,21 +103,18 @@ def get_bug(word):
 
 def get_bug_dict(data):
     bug_dict = {}
-    for key in GLUE_TASK_TO_KEYS[args.task]:
-        if not key:
-            continue
 
-        indexed_tokens = data["input_ids"]
-        tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
-        for i in range(data["input_start_idx"], data["input_end_idx"]):
-            if tokenized_words[i] in word_list:
-                words = get_bug(tokenized_words[i])
-            else:
-                words = []
-            if len(words) >= 1:
-                bug_dict[tokenized_words[i]] = words
-            else:
-                bug_dict[tokenized_words[i]] = [tokenized_words[i]]
+    indexed_tokens = data["input_ids"]
+    tokenized_words = [tokenizer._convert_id_to_token(x) for x in indexed_tokens]
+    for i in range(data["input_start_idx"], data["input_end_idx"]):
+        if tokenized_words[i].strip("▁") in word_list:
+            words = get_bug(tokenized_words[i])
+        else:
+            words = []
+        if len(words) >= 1:
+            bug_dict[tokenized_words[i]] = words
+        else:
+            bug_dict[tokenized_words[i]] = [tokenized_words[i]]
 
     data["bug_dict"] = json.dumps(bug_dict)  # Have to do this to work with Apache Arrow...
     return data
@@ -125,9 +122,17 @@ def get_bug_dict(data):
 
 if __name__ == '__main__':
     args = get_args()
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
-    word_list = np.load(args.word_list)
+    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir=args.cache_dir)
+    word_list = set(np.load(args.word_list))
     torch.manual_seed(args.seed)
-    test_data = load_dataset("glue", args.task, cache_dir="./.cache/", split="validation")
+    if args.task == 'mnli':
+        split = 'validation_matched'
+    elif args.task == 'mnli-mm':
+        split = 'validation_mismatched'
+    else:
+        split = "validation"
+    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
     test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC")
-    test_data.map(get_bug_dict, num_proc=16).save_to_disk(f"./adv-glue/{args.task}/FC_FT")
+    if "input_embeddings" in test_data.column_names:
+        test_data = test_data.remove_columns(["input_embeddings"])
+    test_data.map(get_bug_dict, num_proc=64).save_to_disk(f"./adv-glue/{args.task}/FC_FT")
