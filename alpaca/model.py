@@ -170,6 +170,7 @@ def test():
 
     args = get_args()
     device = torch.device("cuda:0")
+    print("Loading model", args.model)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     model = ZeroShotLlamaForSemAttack(args.model, cache_dir=args.cache_dir, torch_compile=False)
@@ -187,10 +188,10 @@ def test():
             data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
             pred = model(data)
             generate_ids = model.llama_classifier.generate(
-                input_ids=data["input_ids"][:data["label_start_idx"]].unsqueeze(dim=0), max_new_tokens=5
+                input_ids=data["input_ids"][:(data["label_start_idx"] - 1)].unsqueeze(dim=0), max_new_tokens=500
             )
-            generated_prediction = tokenizer.batch_decode(generate_ids)
-            print(generated_prediction, tokenizer.batch_decode(data["input_ids"][:data["label_start_idx"]]))
+            generated_prediction = tokenizer.batch_decode(generate_ids)[0]
+            print(generated_prediction)
             generation_predictions.append(generated_prediction)
             dev_predictions.append(pred["pred"].reshape(-1).argmax().item())
             dev_labels.append(data["label"].item())
@@ -204,7 +205,8 @@ def test():
                 {
                     "labels": dev_labels,
                     "lm_predictions": dev_predictions,
-                    "generation_predictions": generation_predictions
+                    "generation_predictions": generation_predictions,
+                    "accuracy": np.mean(np.array(dev_labels) == np.array(dev_predictions))
                 }, f, indent=4
             )
 
