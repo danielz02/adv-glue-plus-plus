@@ -68,12 +68,14 @@ def get_knowledge_dict(data):
 
 if __name__ == '__main__':
     args = get_args()
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir=args.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     word_list = set(np.load(args.word_list))
 
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
-    test_data = load_from_disk(f"./adv-glue/{args.task}/FC_FT")
+    test_data = load_from_disk(os.path.join("./adv-glue", args.model, args.task, "FC_FT"))
     if "input_embeddings" in test_data.column_names:
         test_data = test_data.remove_columns(["input_embeddings"])
-    test_data.map(get_knowledge_dict, num_proc=64).save_to_disk(f"./adv-glue/{args.task}/FC_FT_FK")
+    test_data.map(get_knowledge_dict, num_proc=64).save_to_disk(
+        os.path.join("./adv-glue", args.model, args.task, "FC_FT_FK")
+    )

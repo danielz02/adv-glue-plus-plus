@@ -1,4 +1,6 @@
 import json
+import os
+
 from numpy import random
 import joblib
 import numpy as np
@@ -122,10 +124,10 @@ def get_bug_dict(data):
 
 if __name__ == '__main__':
     args = get_args()
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir=args.cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     word_list = set(np.load(args.word_list))
     torch.manual_seed(args.seed)
-    test_data = load_from_disk(f"./adv-glue/{args.task}/FC")
+    test_data = load_from_disk(os.path.join("./adv-glue", args.model, args.task, "FC"))
     if "input_embeddings" in test_data.column_names:
         test_data = test_data.remove_columns(["input_embeddings"])
-    test_data.map(get_bug_dict, num_proc=64).save_to_disk(f"./adv-glue/{args.task}/FC_FT")
+    test_data.map(get_bug_dict, num_proc=64).save_to_disk(os.path.join("./adv-glue", args.model, args.task, "FC_FT"))

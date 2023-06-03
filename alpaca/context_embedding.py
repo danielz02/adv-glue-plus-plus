@@ -31,6 +31,8 @@ import nltk
 
 from mpi4py import MPI
 
+from util import get_args
+
 DB_PATH = './corpora/enwiki-20170820.db'
 nltk.download('averaged_perceptron_tagger', download_dir="./corpora")
 nltk.download('punkt', download_dir="./corpora/")
@@ -83,7 +85,8 @@ def get_embeddings(word, sentences, model, tokenizer, device):
 
     max_len = 512
     for sentence in sentences:
-        sentence = '</s> ' + sentence + ' </s>'  # Changed to LlaMA bos and eos tokens
+        # sentence = '<s> ###Human: ' + sentence + ' </s>'  # Changed to LlaMA bos and eos tokens
+        sentence = '<s> ###Human: ' + sentence + ' </s>'
         tokenized_text = tokenizer.tokenize(sentence)  # </s> is not added automatically when calling tokenizer.tokenize
 
         # Convert token to vocabulary indices
@@ -140,7 +143,7 @@ def get_embeddings(word, sentences, model, tokenizer, device):
         encoded_layers = torch.cat(encoded_layers, dim=0)
 
     for i, idx in enumerate(word_indices):
-        points.append(encoded_layers[i][idx].cpu().numpy())
+        points.append(encoded_layers[i][idx].float().cpu().numpy())
 
     points = np.asarray(points)
 
@@ -211,28 +214,30 @@ def init_models():
     print(f"rank {rank} device : {device}")
 
     # Load pre-trained model tokenizer (vocabulary)
-    tokenizer = AutoTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     # Load pre-trained model (weights)
-    model = AutoModelForCausalLM.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, cache_dir=args.cache_dir, torch_dtype=torch.bfloat16
+    )
     model.eval()
-    model = model.to(device=device, dtype=torch.bfloat16)
+    model = model.to(device=device)
 
     return device, tokenizer, model
 
 
 def load_sentences():
-    with open('./static/words.json', "r") as f:
+    with open(os.path.join("./static", args.model, "words.json"), "r") as f:
         words = json.load(f)
 
-    if os.path.exists("./static/sentences.pkl"):
-        sentences = joblib.load("./static/sentences.pkl")
+    if os.path.exists(os.path.join("./static", args.model, "sentences.pkl")):
+        sentences = joblib.load(os.path.join("./static", args.model, "sentences.pkl"))
     elif rank == 0:
         sentences = get_sentences()
-        joblib.dump(sentences, "./static/sentences.pkl")
+        joblib.dump(sentences, os.path.join("./static", args.model, "sentences.pkl"))
         comm.barrier()
     else:
         comm.barrier()  # waiting for rank 0 to get sentences
-        sentences = joblib.load("./static/sentences.pkl")
+        sentences = joblib.load(os.path.join("./static", args.model, "sentences.pkl"))
 
     return words, sentences
 
@@ -265,13 +270,13 @@ def main():
             print(f"[{rank}] Worker {source} exited.")
             closed_workers += 1
 
-    # s = np.memmap('./static/s.dat', mode="w+", shape=(13928506, 4096), dtype=np.float32)
+    # s = np.memmap('./static/TheBloke/stable-vicuna-13B-HF/s.dat', mode="w+", shape=(13928506, 4096), dtype=np.float32)
     s = np.zeros(shape=(13928506, 4096), dtype=np.float32)
     len_list = [0, ]
     word_list = []
     pointer = 0
     for word in words:
-        f = f"./static/pickles/{word}.npz"
+        f = os.path.join("./static", args.model, "pickles", f"{word}.npz")
         if not os.path.exists(f):
             continue
         locs_and_data = np.load(f)
@@ -284,17 +289,17 @@ def main():
     len_list = np.array(len_list)
     word_list = np.array(word_list)
     print(len(s), pointer)
-    np.save("./static/s.npy", s)
-    np.save('./static/word_list.npy', word_list)
-    np.save('./static/len_list.npy', len_list)
+    np.save(os.path.join("./static", args.model, f"s.npy"), s)
+    np.save(os.path.join("./static", args.model, f"word_list.npy"), word_list)
+    np.save(os.path.join("./static", args.model, f"len_list.npy"), len_list)
 
     # Store an updated json with the filtered words.
     filtered_words = []
-    for word in os.listdir('./static/pickles'):
+    for word in os.listdir(os.path.join("./static", args.model, "pickles")):
         word = word.split('.')[0]
         filtered_words.append(word)
 
-    with open('./static/filtered_words.json', 'w') as outfile:
+    with open(os.path.join("./static", args.model, "filtered_words.json"), 'w') as outfile:
         json.dump(filtered_words, outfile)
     print(filtered_words)
     print("Master finishing")
@@ -317,7 +322,7 @@ def worker():
             for task_index in tqdm(data, desc=f"Rank {rank}"):
                 word = words[task_index]
 
-                if os.path.exists(f'./static/pickles/{word}.npz'):
+                if os.path.join("./static", args.model, "pickles", f"{word}.npz"):
                     print(f'[{rank}] Skipping {word}')
                     continue
 
@@ -330,7 +335,7 @@ def worker():
                     continue
                 try:
                     locs_and_data = neighbors(word, sentences_w_word, model, tokenizer, device)
-                    np.savez(f'./static/pickles/{word}.npz', **locs_and_data)
+                    np.savez(os.path.join("./static", args.model, "pickles", f"{word}.npz"), **locs_and_data)
                 except IndexError as e:
                     print(e)
                 except ValueError as e:
@@ -350,6 +355,9 @@ if __name__ == '__main__':
     rank = comm.rank  # rank of this process
     local_rank = os.environ["OMPI_COMM_WORLD_LOCAL_RANK"]  # Only works for OpenMPI
     status = MPI.Status()  # get MPI status object
+
+    args = get_args()
+    torch.manual_seed(args.seed)
 
     if rank == 0:
         print(f"Running on {comm.size} cores")

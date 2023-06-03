@@ -11,7 +11,7 @@ from transformers.utils import PaddingStrategy
 
 ALPACA_TASK_DESCRIPTION = {
     "sst2": "For the given input text, label the sentiment of the text as positive or negative. The answer should be "
-            "exact 'positive' or 'negative'.",
+            "exactly 'positive' or 'negative'.",
     "mnli": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
             "'no'.",
     "mnli-mm": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', "
