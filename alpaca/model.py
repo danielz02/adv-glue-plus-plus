@@ -15,9 +15,9 @@ from util import get_args
 
 
 class LlamaForZeroShotSequenceClassification(nn.Module):
-    def __init__(self, config, cache_dir, torch_compile=False):
+    def __init__(self, config, cache_dir, torch_compile=False, dtype=torch.bfloat16):
         super().__init__()
-        self.model = LlamaForCausalLM.from_pretrained(config, cache_dir=cache_dir)
+        self.model = LlamaForCausalLM.from_pretrained(config, cache_dir=cache_dir, torch_dtype=dtype)
         self.hidden_size = self.model.config.hidden_size
         self.vocab_size = self.model.config.vocab_size
         if torch_compile:
@@ -102,11 +102,11 @@ class LlamaForZeroShotSequenceClassification(nn.Module):
 
 
 class ZeroShotLlamaForSemAttack(nn.Module):
-    def __init__(self, model_name, cache_dir, torch_compile=False):
+    def __init__(self, model_name, cache_dir, torch_compile=False, dtype=torch.bfloat16):
         super().__init__()
         self.torch_compile = torch_compile
         self.llama_classifier = LlamaForZeroShotSequenceClassification(
-            model_name, cache_dir, torch_compile=torch_compile
+            model_name, cache_dir, torch_compile=torch_compile, dtype=dtype
         )
 
     def get_input_embedding_vector(self, input_ids: torch.LongTensor):
@@ -172,12 +172,13 @@ def test():
     device = torch.device("cuda:0")
     print("Loading model", args.model)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
-    model = ZeroShotLlamaForSemAttack(args.model, cache_dir=args.cache_dir, torch_compile=False)
-    model.to(device=device, dtype=torch.bfloat16).eval()
+    # tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
+    model = ZeroShotLlamaForSemAttack(args.model, cache_dir=args.cache_dir, torch_compile=False, dtype=torch.bfloat16)
+    model.to(device=device).eval()
 
     for task in ALPACA_TASK_DESCRIPTION.keys():
         data_dir = os.path.join(args.cache_dir, f"glue-preprocessed-benign", args.model, task)
+        print("Loading data from", data_dir)
         test_data = load_from_disk(data_dir)
         test_data.set_format("pt", output_all_columns=True)
 
@@ -187,12 +188,15 @@ def test():
         for data in tqdm(test_data):
             data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
             pred = model(data)
-            generate_ids = model.llama_classifier.generate(
-                input_ids=data["input_ids"][:(data["label_start_idx"] - 1)].unsqueeze(dim=0), max_new_tokens=500
-            )
-            generated_prediction = tokenizer.batch_decode(generate_ids)[0]
-            print(generated_prediction)
-            generation_predictions.append(generated_prediction)
+            # generate_ids = model.llama_classifier.generate(
+            #     input_ids=data["input_ids"][:(data["label_start_idx"] - 1)].unsqueeze(dim=0),
+            #     max_new_tokens=3,
+            #     temperature=1e-5,
+            #     top_p=1.0,
+            # )
+            # generated_prediction = tokenizer.batch_decode(generate_ids)[0]
+            # print(generated_prediction)
+            # generation_predictions.append(generated_prediction)
             dev_predictions.append(pred["pred"].reshape(-1).argmax().item())
             dev_labels.append(data["label"].item())
         print(task, np.mean(np.array(dev_labels) == np.array(dev_predictions)))

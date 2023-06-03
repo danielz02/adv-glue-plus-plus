@@ -4,7 +4,7 @@
 #SBATCH --mem=100g
 #SBATCH --output="logs/embedding.out"
 #SBATCH --error="logs/embedding.err"
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=6
 #SBATCH --partition=compute
 #SBATCH --job-name=Test
 #SBATCH --time=24:00:00 # hh:mm:ss for the job

@@ -10,6 +10,8 @@ from CW_attack import CarliniL2
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
+
+from tokenization_alpaca import GLUE_TASK_TO_KEYS, ALPACA_LABEL_CANDIDATE
 from model import ZeroShotLlamaForSemAttack
 
 
@@ -77,7 +79,6 @@ def difference(a, b):
 
 
 def get_cluster_dict(input_cluster_dict, input_ids, tokenizer):
-    print(input_cluster_dict)
     cluster_dict = init_dict()
     input_ids = input_ids.squeeze().cpu().numpy().tolist()
     token_list = [tokenizer._convert_id_to_token(x) for x in input_ids]
@@ -164,7 +165,6 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
     tot = 0
     tot_diff = 0
     tot_len = 0
-    adv_pickle = []
     changed_rates = []
     nums_changed = []
     orig_texts = []
@@ -178,31 +178,35 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
     preds = []
 
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
-    # TODO: Fix hard coded num_classes
-    cw = CarliniL2(args, logger, debug=True, targeted=True, device=device, num_classes=2, decode=args.decode_adv)
+    cw = CarliniL2(
+        args, logger, debug=True, targeted=True, device=device,
+        num_classes=len(ALPACA_LABEL_CANDIDATE[args.task]), decode=args.decode_adv
+    )
     for batch_index, batch in enumerate(tqdm(test_batch)):
-        print(batch)
         inputs = batch
         batch_add_start = batch['add_start'] = []
         batch_add_end = batch['add_end'] = []
         batch['seq_len'] = []
-        for i, sentence in enumerate(batch['sentence']):
-            batch['add_start'].append(2)  # first two tokens: '▁sentence', ':'
-            batch['add_end'].append(len(inputs['input_token_ids'][i]))
-            batch['seq_len'].append(batch['add_end'][i])
-            print(inputs['input_token_ids'][i][batch['add_start'][i]:batch['add_end'][i]])
+        for i, sentence in enumerate(batch[GLUE_TASK_TO_KEYS[args.task][0]]):
+            # input_x = sentence2 if args.fix_sentence == 0 else sentence1
+            if args.fix_sentence == 0:  # Perturb Sentence 2
+                batch['add_start'].append(batch["input2_start_idx"][i] - batch["input_start_idx"][i])
+                batch['add_end'].append(batch["input_end_idx"][i] - batch["input_start_idx"][i])
+            else:  # Perturb Sentence 1
+                batch['add_start'].append(2)  # first two tokens: '▁sentence', ':'
+                batch['add_end'].append(batch["input1_end_idx"][i] - batch["input_start_idx"][i])
+            batch['seq_len'].append(len(inputs['input_token_ids'][i]))
+            # print(inputs['input_token_ids'][i][batch['add_start'][i]:batch['add_end'][i]])
+            # print(len(inputs['input_token_ids'][i]), batch['add_start'][i], batch['add_end'][i])
+            # print(inputs['input_token_ids'][i])
         tot += len(batch['label'])
 
         # FIXME: Handle batches later
         inputs = {k: v[0].to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
         inputs["label_names"] = [x[0] for x in inputs["label_names"]]
 
-        if batch['label'][0] == 1:
-            attack_targets = torch.full_like(batch['label'], 0)
-        else:
-            attack_targets = torch.full_like(batch['label'], 1)
         label = batch['label'] = batch['label'].to(device)
-        attack_targets = attack_targets.to(device)
+        attack_targets = torch.full_like(batch['label'], batch['target'].item()).to(device).long()
 
         # test original acc
         out = model(inputs)["logits"]
@@ -217,7 +221,7 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
         input_embedding = model.get_input_embedding_vector(inputs['input_token_ids'])
         cw_mask = np.zeros(input_embedding.shape).astype(np.float32)
         cw_mask = torch.from_numpy(cw_mask).float().to(device)
-        for i, sentence in enumerate(batch['sentence']):
+        for i, sentence in enumerate(batch[GLUE_TASK_TO_KEYS[args.task][0]]):
             cw_mask[batch['add_start'][i]:batch['add_end'][i]] = 1
 
         # FIXME: Batched processing
@@ -237,8 +241,7 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
             synset = list(set(v + knowledge_dict[k]))
             knowledge_dict[k] = synset
 
-        for k, v in knowledge_dict.items():
-            print(k, v)
+        # print(knowledge_dict)
         cw.wv = knowledge_dict
         cw.mask = cw_mask
         cw.seq = inputs['input_token_ids']
@@ -249,8 +252,13 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
         adv_data = cw.run(model, input_embedding, attack_targets, inputs)
         # retest
         adv_seq = inputs['input_token_ids'].clone().detach().to(device)
+        if not cw.o_best_sent:
+            continue
         for i in range(batch_add_start[0], batch_add_end[0]):
-            print("adv_seq[i]", adv_seq[i], "knowledge_dict[adv_seq[i].item()]", knowledge_dict[adv_seq[i].item()])
+            print(
+                "adv_seq[i]", adv_seq[i], "knowledge_dict[adv_seq[i].item()]", knowledge_dict[adv_seq[i].item()],
+                "cw.o_best_sent", cw.o_best_sent, "i - batch_add_start[0]", i - batch_add_start[0]
+            )
             adv_seq[i] = knowledge_dict[adv_seq[i].item()][cw.o_best_sent[i - batch_add_start[0]]]
         adv_inputs = copy.deepcopy(inputs)
         adv_inputs['input_token_ids'] = adv_seq
@@ -274,41 +282,47 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
             true_labels.append(label.item())
             new_labels.append(prediction.item())
             text_len.append(batch['seq_len'])
+
         ori_labels.append(label.item())
         ori_preds.append(ori_prediction.item())
         preds.append(prediction.item())
 
-    message = 'For target model {}:\noriginal accuracy: {:.2f}%,\nadv accuracy: {:.2f}%,\n' \
-              'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'
-    message = message.format(
-        args.model, (1 - orig_failures / len(test_batch)) * 100, (adv_correct / len(test_batch)) * 100,
-        len(adv_texts) / (len(test_batch) - orig_failures) * 100, np.mean(changed_rates) * 100
-    )
-    logger.info(message)
+        results = []
+        for i in range(len(changed_rates)):
+            save_dict = {'orig_text': orig_texts[i], 'orig_y': true_labels[i], 'pred_y': new_labels[i],
+                         'diff': nums_changed[i], 'diff_ratio': changed_rates[i], 'seq_len': text_len[i]}
+            if isinstance(adv_texts[i], str):
+                save_dict['adv_text'] = adv_texts[i]
+                results.append(save_dict)
+            else:
+                for t in adv_texts[i]:
+                    new_save_dict = copy.deepcopy(save_dict)
+                    new_save_dict['adv_text'] = t
+                    results.append(new_save_dict)
+        joblib.dump(results, os.path.join(args.output_dir, 'attack_results.pkl'))
 
-    joblib.dump(
-        {'ori_labels': ori_labels, 'ori_preds': ori_preds, 'preds': preds},
-        os.path.join(args.output_dir, 'labels.pkl')
-    )
+        message = 'For target model {}:\noriginal accuracy: {:.2f}%,\nadv accuracy: {:.2f}%,\n' \
+                  'attack success rates: {:.2f},\navg changed rate: {:.02f}%\n'
+        message = message.format(
+            args.model, (1 - orig_failures / len(test_batch)) * 100, (adv_correct / len(test_batch)) * 100,
+            len(adv_texts) / (len(test_batch) - orig_failures) * 100, np.mean(changed_rates) * 100
+        )
+        logger.info(message)
 
-    results = []
-    for i in range(len(changed_rates)):
-        save_dict = {'orig_text': orig_texts[i], 'orig_y': true_labels[i], 'pred_y': new_labels[i],
-                     'diff': nums_changed[i], 'diff_ratio': changed_rates[i], 'seq_len': text_len[i]}
-        if isinstance(adv_texts[i], str):
-            save_dict['adv_text'] = adv_texts[i]
-            results.append(save_dict)
-        else:
-            for t in adv_texts[i]:
-                new_save_dict = copy.deepcopy(save_dict)
-                new_save_dict['adv_text'] = t
-                results.append(new_save_dict)
-    joblib.dump(results, os.path.join(args.output_dir, 'attack_results.pkl'))
+        joblib.dump(
+            {'original_labels': ori_labels, 'original_predictions': ori_preds, 'predictions': preds},
+            os.path.join(args.output_dir, 'labels.pkl')
+        )
 
 
 def main():
     args = util.get_args()
-    args.output_dir = os.path.join(args.output_dir, args.model, args.task, "l1" if args.l1 else "l2")
+    if args.task == "sst2":
+        assert args.fix_sentence == 1
+
+    args.output_dir = os.path.join(
+        args.output_dir, args.model, args.task, "l1" if args.l1 else "l2", f"fix_{args.fix_sentence}"
+    )
     print(f"saving to {args.output_dir}")
     if args.tf32:
         from torch.backends import cuda
@@ -331,8 +345,15 @@ def main():
 
     # Set the random seed manually for reproducibility.
     util.set_seed(args.seed)
-    test_data = load_dataset("glue", args.task, cache_dir=args.cache_dir, split="validation")
-    test_data = test_data.load_from_disk(f"./adv-glue/{args.task}/FC_FT_FK")
+    if args.task == 'mnli':
+        split = 'validation_matched'
+    elif args.task == 'mnli-mm':
+        split = 'validation_mismatched'
+    else:
+        split = "validation"
+
+    test_data = load_dataset("glue", args.task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
+    test_data = test_data.load_from_disk(os.path.join("./adv-glue/", args.model, args.task, "FC_FT_FK"))
     test_data.set_format("pt")
 
     cw_word_attack(test_data, args, model, tokenizer, device, logger)

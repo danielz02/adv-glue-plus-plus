@@ -194,6 +194,7 @@ class CarliniL2:
         if self.device:
             target_onehot = target_onehot.to(self.device)
 
+        print("target.unsqueeze(1)", target.unsqueeze(1), "target_onehot", target_onehot)
         target_onehot.scatter_(1, target.unsqueeze(1), 1.)
         target_var = target_onehot.clone().detach().requires_grad_(False)
 
