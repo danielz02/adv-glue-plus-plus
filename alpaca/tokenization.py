@@ -1,19 +1,18 @@
-import os.path
-from copy import deepcopy
-from typing import List, Union, Optional, Dict
-
-import numpy as np
 import torch
-from datasets import load_dataset
-from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer
-from transformers.tokenization_utils_base import TruncationStrategy, BatchEncoding
+import os.path
+import numpy as np
+from util import get_args
+from typing import List, Union, Optional
 from transformers.utils import PaddingStrategy
+from datasets import load_dataset, load_from_disk
+from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer, AutoTokenizer
+from transformers.tokenization_utils_base import TruncationStrategy, BatchEncoding
 
-ALPACA_TASK_DESCRIPTION = {
+TASK_DESCRIPTION = {
     "sst2": "For the given input text, label the sentiment of the text as positive or negative. The answer should be "
             "exactly 'positive' or 'negative'.",
     "mnli": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', 'maybe' or"
-            "'no'.",
+            " 'no'.",
     "mnli-mm": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes', "
                "'maybe' or 'no'.",
     "qnli": "Please identify whether the sentence answers the question. The answer should be exactly 'yes' or 'no'.",
@@ -22,7 +21,7 @@ ALPACA_TASK_DESCRIPTION = {
     "rte": "Please identify whether the premise entails the hypothesis. The answer should be exactly 'yes' or 'no'."
 }
 
-ALPACA_LABEL_CANDIDATE = {
+LABEL_CANDIDATE = {
     "sst2": ["negative", "positive"],
     "mnli": ['yes', 'maybe', 'no'],
     "mnli-mm": ['yes', 'maybe', 'no'],
@@ -34,6 +33,12 @@ ALPACA_LABEL_CANDIDATE = {
 ALPACA_PROMPT_TEMPLATE = "Below is an instruction that describes a task, paired with an input that provides further " \
                          "context. Write a response that appropriately completes the request.\n\n" \
                          "### Instruction:\n{instruction}\n\n### Input:\n<i>{input}</i>\n\n### Response:<l>{label} </s>"
+
+
+VICUNA_PROMPT_TEMPLATE = """\
+### Human: {instruction}\n<i>{input}</i>
+### Assistant: <l>{label}
+"""
 
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
@@ -51,22 +56,22 @@ GLUE_TASK_TO_KEYS = {
 IGNORE_INDEX = -100
 
 
-def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
-    assert task_name in ALPACA_LABEL_CANDIDATE
+def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, template: str):
+    assert task_name in LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
     tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>", "<k>"]})
 
     def preprocess_function(example):
-        for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
+        for i, label in enumerate(LABEL_CANDIDATE[task_name]):
             sentence1 = example[sentence1_key]
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
                 sentence2 = example[sentence2_key]
                 message = f"{message}<j>\n{sentence2_key}: <k>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
-            prompt = ALPACA_PROMPT_TEMPLATE.format(
-                instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
+            prompt = template.format(
+                instruction=TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
             )
             tokens = tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
@@ -96,7 +101,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
             example[f"{label}_response_token_ids"] = response_token_ids
-            example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
+            example["label_names"] = LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
             example["input1_end_idx"] = input1_end_idx if input1_end_idx else input_end_idx
@@ -253,7 +258,7 @@ class AlpacaZeroShotTokenizer(LlamaTokenizer):
 
 
 def get_attack_target(x, task):
-    labels = ALPACA_LABEL_CANDIDATE[task]
+    labels = LABEL_CANDIDATE[task]
 
     if len(labels) == 3:
         if x["label"] == 2:
@@ -277,8 +282,9 @@ def get_attack_target(x, task):
 
 
 def main():
-    for task in ["mnli", "mnli-mm"]:  # ALPACA_TASK_DESCRIPTION.keys():
-        tokenizer = LlamaTokenizer.from_pretrained("chavinlo/alpaca-native", cache_dir="./.cache/")
+    args = get_args()
+    for task in TASK_DESCRIPTION.keys():
+        tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
 
         if task == 'mnli':
             split = 'validation_matched'
@@ -286,16 +292,18 @@ def main():
             split = 'validation_mismatched'
         else:
             split = "validation"
-        test_data = load_dataset("glue", task.replace("-mm", ""), cache_dir="./.cache/", split=split)
-        if os.path.exists(f"./.cache/glue-preprocessed-benign/{task}/"):
+        save_dir = os.path.join(args.cache_dir, "glue-preprocessed-benign", args.model, task)
+        if os.path.exists(save_dir):
             print("Loading preprocessed results")
-            test_data = test_data.load_from_disk(f"./.cache/glue-preprocessed-benign/{task}/")
+            test_data = load_from_disk(save_dir)
         else:
+            test_data = load_dataset("glue", task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
             print("Preprocessing results")
+            template = ALPACA_PROMPT_TEMPLATE if "alpaca" in args.model else VICUNA_PROMPT_TEMPLATE
             test_data = test_data.map(
-                get_preprocess_function(task, tokenizer), num_proc=16
+                get_preprocess_function(task, tokenizer, template), num_proc=16
             )
-            test_data.save_to_disk(f"./.cache/glue-preprocessed-benign/{task}/")
+            test_data.save_to_disk(save_dir)
 
         print(test_data[0])
 
