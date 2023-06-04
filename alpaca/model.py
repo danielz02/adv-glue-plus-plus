@@ -9,9 +9,9 @@ from transformers import LlamaForCausalLM, AutoTokenizer, AutoModel
 from transformers.modeling_outputs import SequenceClassifierOutputWithPast
 from torch import nn
 import torch
-
-from tokenization_alpaca import ALPACA_TASK_DESCRIPTION
 from util import get_args
+
+from tokenization import TASK_DESCRIPTION
 
 
 class LlamaForZeroShotSequenceClassification(nn.Module):
@@ -172,11 +172,10 @@ def test():
     device = torch.device("cuda:0")
     print("Loading model", args.model)
 
-    # tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
     model = ZeroShotLlamaForSemAttack(args.model, cache_dir=args.cache_dir, torch_compile=False, dtype=torch.bfloat16)
     model.to(device=device).eval()
 
-    for task in ALPACA_TASK_DESCRIPTION.keys():
+    for task in TASK_DESCRIPTION.keys():
         data_dir = os.path.join(args.cache_dir, f"glue-preprocessed-benign", args.model, task)
         print("Loading data from", data_dir)
         test_data = load_from_disk(data_dir)
@@ -188,15 +187,6 @@ def test():
         for data in tqdm(test_data):
             data = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
             pred = model(data)
-            # generate_ids = model.llama_classifier.generate(
-            #     input_ids=data["input_ids"][:(data["label_start_idx"] - 1)].unsqueeze(dim=0),
-            #     max_new_tokens=3,
-            #     temperature=1e-5,
-            #     top_p=1.0,
-            # )
-            # generated_prediction = tokenizer.batch_decode(generate_ids)[0]
-            # print(generated_prediction)
-            # generation_predictions.append(generated_prediction)
             dev_predictions.append(pred["pred"].reshape(-1).argmax().item())
             dev_labels.append(data["label"].item())
         print(task, np.mean(np.array(dev_labels) == np.array(dev_predictions)))

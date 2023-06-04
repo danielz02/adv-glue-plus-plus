@@ -1,6 +1,3 @@
-'''
-This example code shows how to use the PWWS attack model to attack a customized sentiment analysis model.
-'''
 import os
 import OpenAttack
 import numpy as np
@@ -11,7 +8,7 @@ import util
 import json
 import torch
 from transformers import AutoTokenizer
-from tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, \
+from tokenization import LABEL_CANDIDATE, TASK_DESCRIPTION, ALPACA_PROMPT_TEMPLATE, \
     GLUE_TASK_TO_KEYS, get_attack_target
 from model import ZeroShotLlamaForSemAttack
 import ssl
@@ -37,10 +34,10 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
 
     def preprocess_function(self, sent):
         task_name = self.args.task
-        assert task_name in ALPACA_LABEL_CANDIDATE
+        assert task_name in LABEL_CANDIDATE
         sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
         example = {}
-        for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
+        for i, label in enumerate(LABEL_CANDIDATE[task_name]):
             sentence1 = self.fixed_sentence if self.fixed_idx == 0 else sent
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
@@ -48,7 +45,7 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
                 message = f"{message}\n{sentence2_key}: {sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = ALPACA_PROMPT_TEMPLATE.format(
-                instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
+                instruction=TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
             )
             tokens = self.tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
@@ -68,7 +65,7 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
             example[f"{label}_response_token_ids"] = response_token_ids
-            example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
+            example["label_names"] = LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
             example["input_end_idx"] = input_end_idx

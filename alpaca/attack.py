@@ -8,11 +8,10 @@ import numpy as np
 from tqdm import tqdm
 from CW_attack import CarliniL2
 from datasets import load_dataset
-from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-
-from tokenization_alpaca import GLUE_TASK_TO_KEYS, ALPACA_LABEL_CANDIDATE
+from torch.utils.data import DataLoader
 from model import ZeroShotLlamaForSemAttack
+from tokenization import GLUE_TASK_TO_KEYS, LABEL_CANDIDATE
 
 
 def transform(seq, tokenizer, unk_words_dict=None):
@@ -180,7 +179,7 @@ def cw_word_attack(data_val, args, model, tokenizer, device, logger):
     test_batch = DataLoader(data_val, batch_size=1, shuffle=False)
     cw = CarliniL2(
         args, logger, debug=True, targeted=True, device=device,
-        num_classes=len(ALPACA_LABEL_CANDIDATE[args.task]), decode=args.decode_adv
+        num_classes=len(LABEL_CANDIDATE[args.task]), decode=args.decode_adv
     )
     for batch_index, batch in enumerate(tqdm(test_batch)):
         inputs = batch
