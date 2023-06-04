@@ -29,24 +29,16 @@ NODE_LIST=${NODE_LIST%?}
 
 echo "Job is starting on $(hostname) with $SLURM_NTASKS tasks on $NODE_LIST"
 
-#pids=""
 COUNTER=0
-for task in "rte" # "sst2" "mnli" "mnli-mm" "qnli" "qqp" "rte"
+for model in "chavinlo/alpaca-native" "eachadea/legacy-vicuna-13b" "TheBloke/stable-vicuna-13B-HF"
 do
-    echo $COUNTER
+    for task in "sst2" "mnli" "mnli-mm" "qnli" "qqp" "rte"
+    do
+        echo $COUNTER
 
-    python alpaca/get_FC.py --task "${task}" --model TheBloke/stable-vicuna-13B-HF --word-list ./static/TheBloke/stable-vicuna-13B-HF/word_list.npy --embedding-space ./static/TheBloke/stable-vicuna-13B-HF/s.npy
-    python alpaca/get_FT.py --task "${task}" --model TheBloke/stable-vicuna-13B-HF --word-list ./static/TheBloke/stable-vicuna-13B-HF/word_list.npy --embedding-space ./static/TheBloke/stable-vicuna-13B-HF/s.npy
-    python alpaca/get_FK.py --task "${task}" --model TheBloke/stable-vicuna-13B-HF --word-list ./static/TheBloke/stable-vicuna-13B-HF/word_list.npy --embedding-space ./static/TheBloke/stable-vicuna-13B-HF/s.npy
-#    pids="$pids $!"
-    COUNTER=$((COUNTER+1))
+        python attacks/get_FC.py --task "${task}" --model "${model}" --word-list "./static/${model}/word_list.npy" --embedding-space "./static/${model}/s.npy"
+        python attacks/get_FT.py --task "${task}" --model "${model}" --word-list "./static/${model}/word_list.npy" --embedding-space "./static/${model}/s.npy"
+        python attacks/get_FK.py --task "${task}" --model "${model}" --word-list "./static/${model}/word_list.npy" --embedding-space "./static/${model}/s.npy"
+        COUNTER=$((COUNTER+1))
+    done
 done
-
-#for pid in $pids; do
-#    wait "$pid" || ((RESULT=1))
-#done
-#
-#if [ "$RESULT" == "1" ];
-#    then
-#       exit 1
-#fi

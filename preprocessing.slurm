@@ -50,5 +50,9 @@ for NODE in $(scontrol show hostname "$SLURM_JOB_NODELIST"); do
 done
 
 echo "Job is starting on $(hostname) with $SLURM_NTASKS tasks on $NODE_LIST"
-mpiexec --mca btl vader,self,tcp -np "$SLURM_NTASKS" --rankfile $RANKFILE --oversubscribe python alpaca/context_embedding.py
+for model in "chavinlo/alpaca-native" "eachadea/legacy-vicuna-13b" "TheBloke/stable-vicuna-13B-HF"
+do
+    python attacks/tokenization.py --model "${model}"
+done
+mpiexec --mca btl vader,self,tcp -np "$SLURM_NTASKS" --rankfile $RANKFILE --oversubscribe python attacks/context_embedding.py
 

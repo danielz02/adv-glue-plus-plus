@@ -2,11 +2,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --mem=50g
-#SBATCH --output="logs/vicuna-benign-zeroshot.out"
-#SBATCH --error="logs/vicuna-benign-zeroshot.err"
+#SBATCH --output="logs/benign-zeroshot.out"
+#SBATCH --error="logs/benign-zeroshot.err"
 #SBATCH --cpus-per-task=12
 #SBATCH --partition=compute
-#SBATCH --job-name=vicuna-benign-zeroshot
+#SBATCH --job-name=benign-zeroshot
 #SBATCH --time=12:00:00 # hh:mm:ss for the job
 #SBATCH --gpus-per-node=1
 
@@ -27,4 +27,7 @@ NODE_LIST=$( scontrol show hostname "$SLURM_JOB_NODELIST" | sed -z 's/\n/\:4,/g'
 NODE_LIST=${NODE_LIST%?}
 
 echo "Job is starting on $(hostname) with $SLURM_NTASKS tasks on $NODE_LIST"
-PYTHONPATH="/data/chenhui_zhang/SemAttack" python alpaca/model.py --model TheBloke/vicuna-13B-1.1-HF
+for model in "chavinlo/alpaca-native" "eachadea/legacy-vicuna-13b" "TheBloke/stable-vicuna-13B-HF"
+do
+    python attacks/model.py --model "${model}"
+done

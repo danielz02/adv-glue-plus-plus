@@ -1,9 +1,12 @@
-for task in "mnli" "mnli-mm" "qnli" "qqp" "rte"
+#!/bin/bash
+for model in "chavinlo/alpaca-native" "eachadea/legacy-vicuna-13b" "TheBloke/stable-vicuna-13B-HF"
 do
-    for fix in 0
+    for task in "sst2" "mnli" "mnli-mm" "qnli" "qqp" "rte"
     do
+        for fix in 0 1
+        do
 
-    cat << EOF | sbatch
+        cat << EOF | sbatch
 #!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -33,10 +36,8 @@ NODE_LIST=$( scontrol show hostname "$SLURM_JOB_NODELIST" | sed -z 's/\n/\:4,/g'
 NODE_LIST=${NODE_LIST%?}
 
 echo "Job is starting on $(hostname) with $SLURM_NTASKS tasks on $NODE_LIST"
-python alpaca/attack.py --bf16 --decode-adv --l1 --task ${task} --word-list ./static/TheBloke/stable-vicuna-13B-HF/word_list.npy --embedding-space ./static/TheBloke/stable-vicuna-13B-HF/s.npy --model TheBloke/stable-vicuna-13B-HF --fix-sentence ${fix}
-#python alpaca/attack.py --bf16 --decode-adv --task ${task} --word-list ./static/TheBloke/stable-vicuna-13B-HF/word_list.npy --embedding-space ./static/TheBloke/stable-vicuna-13B-HF/s.npy --model TheBloke/stable-vicuna-13B-HF --fix-sentence ${fix}
+python attacks/attack.py --bf16 --decode-adv --l1 --task ${task} --word-list ./static/${model}/word_list.npy --embedding-space ./static/${model}/s.npy --model ${model} --fix-sentence ${fix}
 EOF
-
+        done
     done
-
 done
