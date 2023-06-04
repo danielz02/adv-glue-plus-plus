@@ -9,7 +9,7 @@ import joblib
 from collections import Counter
 from datasets import load_from_disk
 
-from tokenization_alpaca import GLUE_TASK_TO_KEYS
+from tokenization import GLUE_TASK_TO_KEYS
 from util import get_args
 from nltk.corpus import wordnet as wn
 from transformers import AutoTokenizer

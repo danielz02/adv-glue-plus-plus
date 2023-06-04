@@ -10,7 +10,7 @@ import string
 from datasets import load_from_disk
 from transformers import AutoTokenizer
 
-from tokenization_alpaca import GLUE_TASK_TO_KEYS
+from tokenization import GLUE_TASK_TO_KEYS
 from util import get_args
 
 

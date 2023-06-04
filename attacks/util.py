@@ -118,13 +118,3 @@ def set_seed(seed):
 unk_id = 0  # LlamaTokenizer <unk> token
 bos_id = 1
 eos_id = 2
-# PAD = 0
-# UNK = 1
-# # not part of the qa vocab, assigned with minus index
-# EOS = -1
-# SOS = -2
-#
-# PAD_WORD = '<pad>'
-# UNK_WORD = '<unk>'
-# EOS_WORD = '<eos>'
-# SOS_WORD = '<sos>'

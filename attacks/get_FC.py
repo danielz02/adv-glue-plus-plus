@@ -10,7 +10,7 @@ from util import get_args
 from collections import Counter
 from datasets import load_from_disk
 from multiprocess import set_start_method
-from tokenization_alpaca import GLUE_TASK_TO_KEYS
+from tokenization import GLUE_TASK_TO_KEYS
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer
 
 
