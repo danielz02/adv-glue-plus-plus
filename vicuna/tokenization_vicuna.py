@@ -11,7 +11,7 @@ import dataclasses
 from enum import auto, Enum
 from typing import List, Tuple, Any
 
-from alpaca.tokenization_alpaca import ALPACA_LABEL_CANDIDATE, GLUE_TASK_TO_KEYS, ALPACA_TASK_DESCRIPTION
+from attacks.tokenization import LABEL_CANDIDATE, GLUE_TASK_TO_KEYS, TASK_DESCRIPTION
 
 # Updated based on https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md More specific
 # instructions here: https://github.com/lm-sys/FastChat/blob/00d9e6675bdff60be6603ffff9313b1d797d2e3e/fastchat
@@ -23,58 +23,36 @@ IGNORE_INDEX = -100
 
 
 class SeparatorStyle(Enum):
-    """Separator styles."""
-
-    ADD_COLON_SINGLE = auto()
-    ADD_COLON_TWO = auto()
-    NO_COLON_SINGLE = auto()
-    BAIZE = auto()
-    DOLLY = auto()
-    RWKV = auto()
-    PHOENIX = auto()
-    NEW_LINE = auto()
-    BILLA = auto()
+    """Different separator style."""
+    SINGLE = auto()
+    TWO = auto()
 
 
 @dataclasses.dataclass
 class Conversation:
     """A class that keeps all conversation history."""
-
-    # The name of this template
-    name: str
-    # System prompts
     system: str
-    # Two roles
     roles: List[str]
-    # All messages
     messages: List[List[str]]
-    # Offset of few shot examples
     offset: int
-    # Separators
-    sep_style: SeparatorStyle
-    sep: str
+    sep_style: SeparatorStyle = SeparatorStyle.SINGLE
+    sep: str = "###"
     sep2: str = None
-    # Stop criteria (the default one is EOS token)
-    stop_str: str = None
-    # Stops generation if meeting any token in this list
-    stop_token_ids: List[int] = None
 
-    # Used for the state in the gradio servers.
-    conv_id: Any = None
+    # Used for gradio server
     skip_next: bool = False
-    model_name: str = None
+    conv_id: Any = None
 
-    def get_prompt(self) -> str:
-        """Get the prompt for generation."""
-        if self.sep_style == SeparatorStyle.ADD_COLON_SINGLE:
-            ret = self.system + self.sep
+    def get_prompt(self):
+        if self.sep_style == SeparatorStyle.SINGLE:
+            ret = self.system
             for role, message in self.messages:
                 if message:
-                    ret += role + ": " + message + self.sep
+                    ret += self.sep + " " + role + ": " + message
                 else:
-                    ret += role + ":"
+                    ret += self.sep + " " + role + ":"
             return ret
-        elif self.sep_style == SeparatorStyle.ADD_COLON_TWO:
+        elif self.sep_style == SeparatorStyle.TWO:
             seps = [self.sep, self.sep2]
             ret = self.system + seps[0]
             for i, (role, message) in enumerate(self.messages):
@@ -83,104 +61,44 @@ class Conversation:
                 else:
                     ret += role + ":"
             return ret
-        elif self.sep_style == SeparatorStyle.NO_COLON_SINGLE:
-            ret = self.system
-            for role, message in self.messages:
-                if message:
-                    ret += role + message + self.sep
-                else:
-                    ret += role
-            return ret
-        elif self.sep_style == SeparatorStyle.BAIZE:
-            ret = self.system + "\n"
-            for role, message in self.messages:
-                if message:
-                    ret += role + message + "\n"
-                else:
-                    ret += role
-            return ret
-        elif self.sep_style == SeparatorStyle.DOLLY:
-            seps = [self.sep, self.sep2]
-            ret = self.system
-            for i, (role, message) in enumerate(self.messages):
-                if message:
-                    ret += role + ":\n" + message + seps[i % 2]
-                    if i % 2 == 1:
-                        ret += "\n\n"
-                else:
-                    ret += role + ":\n"
-            return ret
-        elif self.sep_style == SeparatorStyle.RWKV:
-            ret = self.system
-            for i, (role, message) in enumerate(self.messages):
-                if message:
-                    ret += (
-                            role
-                            + ": "
-                            + message.replace("\r\n", "\n").replace("\n\n", "\n")
-                    )
-                    ret += "\n\n"
-                else:
-                    ret += role + ":"
-            return ret
-        elif self.sep_style == SeparatorStyle.PHOENIX:
-            ret = self.system
-            for role, message in self.messages:
-                if message:
-                    ret += role + ": " + "<s>" + message + "</s>"
-                else:
-                    ret += role + ": " + "<s>"
-            return ret
-        elif self.sep_style == SeparatorStyle.NEW_LINE:
-            ret = self.system + self.sep
-            for role, message in self.messages:
-                if message:
-                    ret += role + "\n" + message + self.sep
-                else:
-                    ret += role + "\n"
-            return ret
-        elif self.sep_style == SeparatorStyle.BILLA:
-            ret = self.system + self.sep
-            for role, message in self.messages:
-                if message:
-                    ret += role + ": " + message + self.sep
-                else:
-                    ret += role + ": "  # must be end with a space
-            return ret
         else:
             raise ValueError(f"Invalid style: {self.sep_style}")
 
-    def append_message(self, role: str, message: str):
-        """Append a new message."""
+    def append_message(self, role, message):
         self.messages.append([role, message])
 
 
 def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
-    assert task_name in ALPACA_LABEL_CANDIDATE
+    assert task_name in LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
     tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>", "<k>"]})
 
     def preprocess_function(example):
-        for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
+        for i, label in enumerate(LABEL_CANDIDATE[task_name]):
             sentence1 = example[sentence1_key]
-            message = f"{ALPACA_TASK_DESCRIPTION[task_name]}\n{sentence1_key}: {sentence1}"
+            message = f"{TASK_DESCRIPTION[task_name]} {sentence1_key}: {sentence1}"
             if sentence2_key:
                 sentence2 = example[sentence2_key]
-                message = f"{message}<j>\n{sentence2_key}: <k>{sentence2}"
+                message = f"{message}<j> {sentence2_key}: <k>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             conversation = Conversation(
-                name="vicuna_v1.1",
-                system="A chat between a curious user and an artificial intelligence assistant. "
+                system="<s> A chat between a curious user and an artificial intelligence assistant. "
                        "The assistant gives helpful, detailed, and polite answers to the user's questions.",
                 roles=["USER", "ASSISTANT"],
                 messages=[["USER", f"<i>{message}</i>"], ["ASSISTANT", f"<l>{label}"]],
                 offset=0,
-                sep_style=SeparatorStyle.ADD_COLON_TWO,
+                sep_style=SeparatorStyle.TWO,
                 sep=" ",
                 sep2="</s>",
             )
             tokens = tokenizer.tokenize(conversation.get_prompt())
+            # TODO: Double check tokenizer. Currently using a temporary fix
+            if "<s>" in tokens[0]:
+                tokens[0] = tokens[0].strip("▁")
+            if "</s>" in tokens[-1]:
+                tokens[-1] = tokens[-1].strip("▁")
+
             input_start_idx = tokens.index("<i>")
             tokens.remove("<i>")
             if sentence2_key:
@@ -208,7 +126,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
             example[f"{label}_response_token_ids"] = response_token_ids
-            example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
+            example["label_names"] = LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
             example["input1_end_idx"] = input1_end_idx if input1_end_idx else input_end_idx
@@ -224,7 +142,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
 
 
 def get_attack_target(x, task):
-    labels = ALPACA_LABEL_CANDIDATE[task]
+    labels = LABEL_CANDIDATE[task]
 
     if len(labels) == 3:
         if x["label"] == 2:
@@ -250,7 +168,7 @@ def get_attack_target(x, task):
 def main():
     tokenizer = AutoTokenizer.from_pretrained("TheBloke/vicuna-13B-1.1-HF", cache_dir="./.cache")
 
-    for task in ALPACA_TASK_DESCRIPTION.keys():
+    for task in TASK_DESCRIPTION.keys():
         if task == 'mnli':
             split = 'validation_matched'
         elif task == 'mnli-mm':

@@ -9,7 +9,7 @@ from transformers import LlamaTokenizer, TensorType, PreTrainedTokenizer
 from transformers.tokenization_utils_base import TruncationStrategy, BatchEncoding
 from transformers.utils import PaddingStrategy
 
-from alpaca.tokenization_alpaca import ALPACA_LABEL_CANDIDATE, ALPACA_TASK_DESCRIPTION, GLUE_TASK_TO_KEYS
+from attacks.tokenization import LABEL_CANDIDATE, TASK_DESCRIPTION, GLUE_TASK_TO_KEYS
 
 
 VICUNA_PROMPT_TEMPLATE = """\
@@ -21,13 +21,13 @@ IGNORE_INDEX = -100
 
 
 def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
-    assert task_name in ALPACA_LABEL_CANDIDATE
+    assert task_name in LABEL_CANDIDATE
     sentence1_key, sentence2_key = GLUE_TASK_TO_KEYS[task_name]
     # FIXME: New special tokens assigned id 0?
     tokenizer.add_special_tokens({"additional_special_tokens": ["<l>", "<i>", "</i>", "<j>", "<k>"]})
 
     def preprocess_function(example):
-        for i, label in enumerate(ALPACA_LABEL_CANDIDATE[task_name]):
+        for i, label in enumerate(LABEL_CANDIDATE[task_name]):
             sentence1 = example[sentence1_key]
             message = f"{sentence1_key}: {sentence1}"
             if sentence2_key:
@@ -35,7 +35,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
                 message = f"{message}<j>\n{sentence2_key}: <k>{sentence2}"
             message = f"{message}".replace('sentence1', 'premise').replace('sentence2', 'hypothesis')
             prompt = VICUNA_PROMPT_TEMPLATE.format(
-                instruction=ALPACA_TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
+                instruction=TASK_DESCRIPTION[task_name], input=message, label=f"{label}"
             )
             tokens = tokenizer.tokenize(prompt)
             input_start_idx = tokens.index("<i>")
@@ -65,7 +65,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
             example[f"input_token_ids"] = input_token_ids
             example[f"response_header_token_ids"] = response_header_token_ids
             example[f"{label}_response_token_ids"] = response_token_ids
-            example["label_names"] = ALPACA_LABEL_CANDIDATE[task_name]
+            example["label_names"] = LABEL_CANDIDATE[task_name]
 
             example["input_start_idx"] = input_start_idx
             example["input1_end_idx"] = input1_end_idx if input1_end_idx else input_end_idx
@@ -81,7 +81,7 @@ def get_preprocess_function(task_name: str, tokenizer: PreTrainedTokenizer, ):
 
 
 def get_attack_target(x, task):
-    labels = ALPACA_LABEL_CANDIDATE[task]
+    labels = LABEL_CANDIDATE[task]
 
     if len(labels) == 3:
         if x["label"] == 2:
@@ -105,7 +105,7 @@ def get_attack_target(x, task):
 
 
 def main():
-    for task in ALPACA_TASK_DESCRIPTION.keys():
+    for task in TASK_DESCRIPTION.keys():
         tokenizer = LlamaTokenizer.from_pretrained("TheBloke/stable-vicuna-13B-HF", cache_dir="./.cache/")
 
         if task == 'mnli':
