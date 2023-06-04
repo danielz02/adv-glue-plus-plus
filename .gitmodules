@@ -1,0 +1,3 @@
+[submodule "OpenAttack"]
+	path = OpenAttack
+	url = git@github.com:thunlp/OpenAttack.git

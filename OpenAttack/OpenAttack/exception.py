@@ -1,2 +1,0 @@
-class AttackException(Exception):
-    pass
