@@ -1,10 +1,4 @@
-# SemAttack
-
-This is the official code base for the NAACL 2022 paper, "[SemAttack: Natural Textual Attacks via Different Semantic Spaces](https://arxiv.org/abs/2205.01287)".
-
-This repo contains code to attack both English and Chinese models. We put the code in seperate folders.
-
-You may use our code to attack other tasks or other datasets.
+# AdvGLUE++ Dataset Generation
 
 ## Setup
 
