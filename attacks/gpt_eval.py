@@ -201,7 +201,7 @@ def classify(dataset, task_name, model_name, current_results=None, current_price
 
         label = data["label"]
 
-        if data["method"] == "SemAttack":
+        if data["method"] == "semattack":
             message = data["sentence"]
         else:
             message = f"{key1.replace('original_', '')}: {data[key1]}"
