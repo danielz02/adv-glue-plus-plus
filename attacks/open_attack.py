@@ -82,7 +82,7 @@ class ZeroShotLlamaClassifier(OpenAttack.Classifier):
         for sent in input_:
             data = self.preprocess_function(sent)
             res = self.model(data)
-            prob = torch.nn.functional.softmax(res["pred"].reshape(-1), dim=0)
+            prob = torch.nn.functional.softmax(res["pred"].reshape(-1), dim=0).float()
             ret.append(prob.detach().cpu().numpy())
 
         # The get_prob method finally returns a np.ndarray of shape (len(input_), 2). See Classifier for detail.
@@ -113,14 +113,14 @@ def get_dataset_mapping(model, task, fix_id):
         }
         if model:
             model.fix_sentence(fixed_x)
-            model["pred"] = model.get_pred([input_x])[0]
+            return_dict["pred"] = model.get_pred([input_x])[0]
 
         return return_dict
 
     return dataset_mapping
 
 
-def get_dataset(args, model):
+def get_dataset_val(args, model):
     if args.task == 'mnli':
         split = 'validation_matched'
     elif args.task == 'mnli-mm':
@@ -130,6 +130,14 @@ def get_dataset(args, model):
     if args.task in ['qqp', 'qnli', 'mnli', 'mnli-mm']:
         split += '[:1000]'
     dataset = load_dataset("glue", args.task.replace('-mm', ''), cache_dir=args.cache_dir, split=split)
+    dataset = dataset.map(function=get_dataset_mapping(model, args.task, args.fix_sentence))
+    return dataset
+
+
+def get_dataset(args, model, max_len=10000, split_seed=42):
+    dataset = load_dataset("glue", args.task, cache_dir=args.cache_dir, split='train')
+    if len(dataset) > max_len:
+        dataset = dataset.train_test_split(test_size=max_len, seed=split_seed)['test']
     dataset = dataset.map(function=get_dataset_mapping(model, args.task, args.fix_sentence))
     return dataset
 
@@ -158,10 +166,10 @@ def main():
         'textfooler': OpenAttack.attackers.TextFoolerAttacker,
         'sememepso': OpenAttack.attackers.PSOAttacker,
         'bertattack': OpenAttack.attackers.BERTAttacker,
-        'bae': OpenAttack.attackers.BAEAttacker,
-        'genetic': OpenAttack.attackers.GeneticAttacker,
-        'pwws': OpenAttack.attackers.PWWSAttacker,
-        'deepwordbug': OpenAttack.attackers.DeepWordBugAttacker,
+        # 'bae': OpenAttack.attackers.BAEAttacker,
+        # 'genetic': OpenAttack.attackers.GeneticAttacker,
+        # 'pwws': OpenAttack.attackers.PWWSAttacker,
+        # 'deepwordbug': OpenAttack.attackers.DeepWordBugAttacker,
     }
     print('Attack using', args.attack)
     attacker = algorithm_to_attacker[args.attack]()
