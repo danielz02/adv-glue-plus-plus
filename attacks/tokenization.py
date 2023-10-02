@@ -40,6 +40,14 @@ VICUNA_PROMPT_TEMPLATE = """\
 ### Assistant: <l>{label}
 """
 
+LLAMA2_PROMPT_TEMPLATE = """<s>[INST] <<SYS>>\nYou are a helpful, respectful and honest assistant. Always answer as 
+helpfully as possible, while being safe. Your answers should not include any harmful, unethical, racist, sexist, 
+toxic, dangerous, or illegal content. Please ensure that your responses are socially unbiased and positive in 
+nature.\n\nIf a question does not make any sense, or is not factually coherent, explain why instead of answering 
+something not correct. If you don't know the answer to a question, please don't share false 
+information.\n<</SYS>>\n\n{instruction} <i>{input}</i>[/INST] <l>{label} </s><s>
+"""
+
 GLUE_TASK_TO_KEYS = {
     "cola": ("sentence", None),
     "mnli": ("premise", "hypothesis"),
@@ -286,20 +294,29 @@ def main():
     for task in TASK_DESCRIPTION.keys():
         tokenizer = AutoTokenizer.from_pretrained(args.model, cache_dir=args.cache_dir)
 
-        if task == 'mnli':
-            split = 'validation_matched'
-        elif task == 'mnli-mm':
-            split = 'validation_mismatched'
+        if args.split == "validation":
+            if task == 'mnli':
+                split = 'validation_matched'
+            elif task == 'mnli-mm':
+                split = 'validation_mismatched'
+            else:
+                split = "validation"
         else:
-            split = "validation"
-        save_dir = os.path.join(args.cache_dir, "glue-preprocessed-benign", args.model, task)
+            split = args.split
+        save_dir = os.path.join(args.cache_dir, "glue-preprocessed-benign", args.model, task, args.split)
+
         if os.path.exists(save_dir):
             print("Loading preprocessed results")
             test_data = load_from_disk(save_dir)
         else:
             test_data = load_dataset("glue", task.replace("-mm", ""), cache_dir=args.cache_dir, split=split)
             print("Preprocessing results")
-            template = ALPACA_PROMPT_TEMPLATE if "alpaca" in args.model else VICUNA_PROMPT_TEMPLATE
+            if "Llama-2" in args.model:
+                template = LLAMA2_PROMPT_TEMPLATE
+            elif "alpaca" in args.model:
+                template = ALPACA_PROMPT_TEMPLATE
+            else:
+                template = VICUNA_PROMPT_TEMPLATE
             test_data = test_data.map(
                 get_preprocess_function(task, tokenizer, template), num_proc=16
             )
